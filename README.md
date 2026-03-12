@@ -4,32 +4,42 @@ QuotaBar is a macOS menu bar app for monitoring Codex usage across multiple isol
 
 It is designed for people who want:
 
-- a status bar app instead of a full desktop window
-- multiple Codex accounts under one app
-- isolated account storage without touching the default `~/.codex`
-- quick visibility into the current 5-hour and weekly remaining quota
+* a status bar app instead of a full desktop window
+* multiple Codex accounts under one app
+* isolated account storage without touching the default `~/.codex`
+* quick visibility into the current 5-hour and weekly remaining quota
+
+## Screenshots
+
+### Menu Bar Panel
+
+<img src="./menu-panel.jpeg" alt="CodexBar menu screenshot" width="480" />
+
+### Settings
+
+<img src="./settings.jpeg" alt="QuotaBar settings screenshot" width="480" />
 
 ## What It Does
 
 QuotaBar currently supports:
 
-- multiple Codex accounts for a single provider
-- browser-based `codex login` in an isolated temporary `CODEX_HOME`
-- manual `auth.json` import
-- secure auth blob storage in Keychain
-- per-account metadata storage in SwiftData
-- menu bar monitoring panel
-- manual refresh
-- background refresh every 30 minutes
+* multiple Codex accounts for a single provider
+* browser-based `codex login` in an isolated temporary `CODEX_HOME`
+* manual `auth.json` import
+* secure auth blob storage in Keychain
+* per-account metadata storage in SwiftData
+* menu bar monitoring panel
+* manual refresh
+* background refresh every 30 minutes
 
 The monitoring panel shows:
 
-- account email
-- plan tag
-- 5-hour remaining quota
-- weekly remaining quota
-- short reset timestamps
-- account health state
+* account email
+* plan tag
+* 5-hour remaining quota
+* weekly remaining quota
+* short reset timestamps
+* account health state
 
 ## How It Works
 
@@ -49,33 +59,33 @@ https://chatgpt.com/backend-api/wham/usage
 
 QuotaBar maps that response into:
 
-- 5h remaining
-- weekly remaining
-- reset times
-- plan type
+* 5h remaining
+* weekly remaining
+* reset times
+* plan type
 
 ## Storage Model
 
 Sensitive data:
 
-- full `auth.json` per account
-- stored in macOS Keychain
+* full `auth.json` per account
+* stored in macOS Keychain
 
 Non-sensitive data:
 
-- display name
-- email
-- remote account id
-- plan type
-- enabled/disabled state
-- sync timestamps
-- stored in SwiftData
+* display name
+* email
+* remote account id
+* plan type
+* enabled/disabled state
+* sync timestamps
+* stored in SwiftData
 
 ## Requirements
 
-- macOS
-- Xcode 16+
-- an installed `codex` CLI available to the app
+* macOS
+* Xcode 16+
+* an installed `codex` CLI available to the app
 
 ## Run Locally
 
@@ -99,25 +109,25 @@ xcodebuild \
 
 ## Notes
 
-- This is not an official OpenAI product.
-- The usage endpoint and auth format are not stable public APIs and may change.
-- API-key-only auth is not supported for quota monitoring. A ChatGPT/Codex bearer token is required.
+* This is not an official OpenAI product.
+* The usage endpoint and auth format are not stable public APIs and may change.
+* API-key-only auth is not supported for quota monitoring. A ChatGPT/Codex bearer token is required.
 
 ## Privacy
 
 QuotaBar is built to minimize account cross-contamination:
 
-- it does not reuse the default `~/.codex`
-- each account is stored independently
-- refresh uses the account’s own stored auth blob
+* it does not reuse the default `~/.codex`
+* each account is stored independently
+* refresh uses the account’s own stored auth blob
 
 ## Project Status
 
 Current scope is intentionally narrow:
 
-- one provider: Codex
-- one menu bar monitor
-- multi-account support first
+* one provider: Codex
+* one menu bar monitor
+* multi-account support first
 
 More providers can be added later behind the same account/service model.
 

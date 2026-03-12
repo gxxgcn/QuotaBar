@@ -48,7 +48,7 @@ final class ProviderMonitorViewModel: ObservableObject {
             accountCount: enabledAccounts.count,
             syncedCount: syncedCount,
             unhealthyCount: unhealthyCount,
-            hottestAccountName: hottestAccount?.email,
+            hottestAccountName: hottestAccount?.displayName,
             hottestUsagePercent: hottestAccount.flatMap { snapshotsByAccountID[$0.id]?.highestUsagePercent } ?? 0
         )
     }
