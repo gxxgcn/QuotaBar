@@ -1,32 +1,47 @@
-//
-//  QuotaBarApp.swift
-//  QuotaBar
-//
-//  Created by Aidan on 2026/3/12.
-//
-
 import SwiftUI
 import SwiftData
 
 @main
 struct QuotaBarApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+    private let sharedModelContainer: ModelContainer
+    @StateObject private var viewModel: ProviderMonitorViewModel
 
+    init() {
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            let schema = Schema([
+                ProviderAccountRecord.self,
+            ])
+            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+            let modelContainer = try ModelContainer(for: schema, configurations: [configuration])
+            let credentialStore = KeychainCredentialStore()
+            let service = CodexAccountService(
+                modelContext: modelContainer.mainContext,
+                credentialStore: credentialStore
+            )
+            let viewModel = ProviderMonitorViewModel(service: service)
+
+            self.sharedModelContainer = modelContainer
+            _viewModel = StateObject(wrappedValue: viewModel)
+            Task {
+                await viewModel.bootstrap()
+            }
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            fatalError("Could not initialize QuotaBar: \(error)")
         }
-    }()
+    }
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra {
+            ContentView(viewModel: viewModel)
+                .modelContainer(sharedModelContainer)
+        } label: {
+            Label("QuotaBar", systemImage: viewModel.statusBarIconName)
         }
-        .modelContainer(sharedModelContainer)
+        .menuBarExtraStyle(.window)
+
+        Window("QuotaBar Settings", id: "settings") {
+            SettingsView(viewModel: viewModel)
+                .modelContainer(sharedModelContainer)
+        }
     }
 }

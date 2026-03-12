@@ -1,0 +1,422 @@
+import Foundation
+import SwiftData
+
+@MainActor
+final class CodexAccountService {
+    private static let refreshTimeout: Duration = .seconds(15)
+    private static let usageEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+
+    struct LoginStartContext {
+        let authURL: URL?
+        let session: LoginSession
+    }
+
+    final class LoginSession {
+        let homeURL: URL
+        let process: Process
+        let stdoutPipe: Pipe
+        let stderrPipe: Pipe
+
+        init(homeURL: URL, process: Process, stdoutPipe: Pipe, stderrPipe: Pipe) {
+            self.homeURL = homeURL
+            self.process = process
+            self.stdoutPipe = stdoutPipe
+            self.stderrPipe = stderrPipe
+        }
+    }
+
+    private let modelContext: ModelContext
+    private let credentialStore: CredentialStore
+    private let fileManager: FileManager
+    init(
+        modelContext: ModelContext,
+        credentialStore: CredentialStore,
+        fileManager: FileManager = .default
+    ) {
+        self.modelContext = modelContext
+        self.credentialStore = credentialStore
+        self.fileManager = fileManager
+    }
+
+    func fetchAccounts(providerKind: ProviderKind = .codex) throws -> [ProviderAccountRecord] {
+        let descriptor = FetchDescriptor<ProviderAccountRecord>(
+            predicate: #Predicate { $0.providerKindRawValue == providerKind.rawValue },
+            sortBy: [
+                SortDescriptor(\.sortOrder),
+                SortDescriptor(\.createdAt),
+            ]
+        )
+        return try modelContext.fetch(descriptor)
+    }
+
+    func beginLogin() async throws -> LoginStartContext {
+        let homeURL = try createIsolatedCodexHome()
+        let session = try startLoginProcess(in: homeURL)
+        return LoginStartContext(authURL: nil, session: session)
+    }
+
+    func completeLogin(using context: LoginStartContext) async throws -> ProviderAccountRecord {
+        defer { cleanup(loginSession: context.session) }
+
+        if fileManager.fileExists(atPath: context.session.homeURL.appendingPathComponent("auth.json").path) {
+            let authData = try loadAuthData(from: context.session.homeURL)
+            return try await upsertAccount(from: authData, authData: authData)
+        }
+
+        if context.session.process.isRunning {
+            throw CodexAppServerError.requestFailed(
+                message: "Codex login is still running. Finish it in the browser, then click \"I've Finished Login\" again."
+            )
+        }
+
+        let output = readCombinedOutput(from: context.session)
+        let status = context.session.process.terminationStatus
+        if status == 0 {
+            throw CodexAppServerError.loginDidNotProduceAuth
+        }
+
+        let detail = output.isEmpty ? "No output captured." : output
+        throw CodexAppServerError.requestFailed(
+            message: "Codex login exited with status \(status). \(detail)"
+        )
+    }
+
+    func refreshAccount(_ account: ProviderAccountRecord) async throws -> CodexUsageSnapshot {
+        let authData = try await credentialStore.loadAuthData(for: account.id)
+        account.syncStatus = .refreshing
+        try modelContext.save()
+
+        do {
+            let token = try CodexAuthParser.bearerToken(from: authData)
+            let usageResponse = try await withTimeout(Self.refreshTimeout) {
+                try await self.fetchUsage(token: token)
+            }
+
+            if let planType = usageResponse.planType, !planType.isEmpty {
+                account.planType = planType
+            }
+            account.lastSyncedAt = .now
+            account.syncStatus = .healthy
+            try modelContext.save()
+
+            return makeSnapshot(account: account, response: usageResponse, error: nil)
+        } catch {
+            account.lastSyncedAt = .now
+            account.syncStatus = syncStatus(for: error)
+            try modelContext.save()
+
+            return CodexUsageSnapshot(
+                accountID: account.id,
+                email: account.email,
+                planType: account.planType,
+                rateLimitsByLimitID: [:],
+                primaryLimit: nil,
+                secondaryLimit: nil,
+                lastError: error.localizedDescription,
+                fetchedAt: .now
+            )
+        }
+    }
+
+    func importAccount(from authData: Data) async throws -> ProviderAccountRecord {
+        try await upsertAccount(from: authData, authData: authData)
+    }
+
+    func renameAccount(id: UUID, to newName: String) throws {
+        guard let record = try fetchAccounts().first(where: { $0.id == id }) else { return }
+        record.displayName = newName.isEmpty ? defaultDisplayName(for: record.email) : newName
+        try modelContext.save()
+    }
+
+    func setAccountEnabled(id: UUID, isEnabled: Bool) throws {
+        guard let record = try fetchAccounts().first(where: { $0.id == id }) else { return }
+        record.isEnabled = isEnabled
+        record.syncStatus = isEnabled ? .idle : .disabled
+        try modelContext.save()
+    }
+
+    func deleteAccount(id: UUID) async throws {
+        guard let record = try fetchAccounts().first(where: { $0.id == id }) else { return }
+        modelContext.delete(record)
+        try modelContext.save()
+        try await credentialStore.deleteAuthData(for: id)
+    }
+
+    private func upsertAccount(
+        from authData: Data,
+        authData persistedAuthData: Data
+    ) async throws -> ProviderAccountRecord {
+        let identity = try CodexAuthParser.identity(from: authData)
+        let remoteAccountID = identity.accountID
+        let existing = try fetchAccounts().first(where: {
+            $0.remoteAccountID == remoteAccountID && $0.providerKind == .codex
+        })
+
+        let record = existing ?? ProviderAccountRecord(
+            providerKind: .codex,
+            displayName: defaultDisplayName(for: identity.email),
+            email: identity.email,
+            remoteAccountID: remoteAccountID,
+            planType: identity.planType,
+            sortOrder: (try? fetchAccounts().count) ?? 0
+        )
+
+        record.email = identity.email
+        record.planType = identity.planType
+        if record.displayName.isEmpty {
+            record.displayName = defaultDisplayName(for: identity.email)
+        }
+        record.remoteAccountID = remoteAccountID
+        record.syncStatus = .idle
+
+        if existing == nil {
+            modelContext.insert(record)
+        }
+
+        try modelContext.save()
+        try await credentialStore.save(authData: persistedAuthData, for: record.id)
+        return record
+    }
+
+    private func makeSnapshot(
+        account: ProviderAccountRecord,
+        response: UsageResponse,
+        error: String?
+    ) -> CodexUsageSnapshot {
+        let limit = RateLimitSnapshotData(
+            limitID: "codex",
+            limitName: "Codex",
+            planType: response.planType ?? account.planType,
+            primary: mapWindow(response.primaryWindow),
+            secondary: mapWindow(response.secondaryWindow)
+        )
+        let mappedRateLimitsByID = ["codex": limit]
+
+        return CodexUsageSnapshot(
+            accountID: account.id,
+            email: account.email,
+            planType: response.planType ?? account.planType,
+            rateLimitsByLimitID: mappedRateLimitsByID,
+            primaryLimit: limit,
+            secondaryLimit: limit.secondary == nil ? nil : limit,
+            lastError: error,
+            fetchedAt: .now
+        )
+    }
+
+    private func mapWindow(_ payload: UsageWindowPayload?) -> RateLimitWindowSnapshot? {
+        guard let payload else { return nil }
+        return RateLimitWindowSnapshot(
+            usedPercent: payload.usedPercent,
+            resetsAt: payload.resetAt.map { Date(timeIntervalSince1970: $0) },
+            resetDescription: nil,
+            windowDurationMins: payload.limitWindowSeconds.map { Int(($0 / 60.0).rounded()) }
+        )
+    }
+
+    private func syncStatus(for error: Error) -> AccountSyncStatus {
+        let message = error.localizedDescription.lowercased()
+        if message.contains("unauthorized") || message.contains("http 401") || message.contains("http 403") {
+            return .unauthorized
+        }
+        return .failed
+    }
+
+    private func fetchUsage(token: String) async throws -> UsageResponse {
+        var request = URLRequest(url: Self.usageEndpoint)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("QuotaBar", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexAppServerError.requestFailed(message: "Usage request returned an invalid response.")
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let body = String(data: data.prefix(200), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let suffix = body.map { $0.isEmpty ? "" : " - \($0)" } ?? ""
+            throw CodexAppServerError.requestFailed(
+                message: "Usage request failed: HTTP \(httpResponse.statusCode)\(suffix)"
+            )
+        }
+
+        return try UsageResponse(data: data)
+    }
+
+    private func loadAuthData(from homeURL: URL) throws -> Data {
+        let authURL = homeURL.appendingPathComponent("auth.json")
+        guard fileManager.fileExists(atPath: authURL.path) else {
+            throw CodexAppServerError.loginDidNotProduceAuth
+        }
+        return try Data(contentsOf: authURL)
+    }
+
+    private func cleanup(loginSession: LoginSession) {
+        if loginSession.process.isRunning {
+            loginSession.process.terminate()
+        }
+        try? fileManager.removeItem(at: loginSession.homeURL)
+    }
+
+    func cancelLogin(using context: LoginStartContext) {
+        cleanup(loginSession: context.session)
+    }
+
+    private func createIsolatedCodexHome() throws -> URL {
+        let url = fileManager.temporaryDirectory
+            .appendingPathComponent("QuotaBar")
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func withTimeout<T: Sendable>(
+        _ duration: Duration,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(for: duration)
+                throw CodexAppServerError.requestFailed(
+                    message: "Timed out waiting for Codex CLI. Check that `codex` works in Terminal and that the account auth is still valid."
+                )
+            }
+
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+    }
+
+    private func startLoginProcess(in homeURL: URL) throws -> LoginSession {
+        guard let codexBinary = CodexBinaryLocator.resolve() else {
+            try? fileManager.removeItem(at: homeURL)
+            throw CodexAppServerError.requestFailed(
+                message: "Could not find the Codex CLI. Install it and ensure QuotaBar can see the binary."
+            )
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [codexBinary, "login"]
+        process.environment = environment(with: homeURL)
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            try? fileManager.removeItem(at: homeURL)
+            throw CodexAppServerError.requestFailed(
+                message: "Could not start `codex login`. Make sure the Codex CLI is installed and available in PATH. \(error.localizedDescription)"
+            )
+        }
+
+        return LoginSession(homeURL: homeURL, process: process, stdoutPipe: stdoutPipe, stderrPipe: stderrPipe)
+    }
+
+    private func environment(with homeURL: URL) -> [String: String] {
+        CodexBinaryLocator.environment(codexHome: homeURL)
+    }
+
+    private func readCombinedOutput(from session: LoginSession) -> String {
+        let stdoutData = session.stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = session.stderrPipe.fileHandleForReading.readDataToEndOfFile()
+
+        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        let merged = [stdout, stderr]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return String(merged.prefix(2000))
+    }
+
+    private func defaultDisplayName(for email: String) -> String {
+        if let localPart = email.split(separator: "@").first, !localPart.isEmpty {
+            return String(localPart)
+        }
+        return "Codex Account"
+    }
+}
+
+private struct UsageResponse: Sendable {
+    let planType: String?
+    let primaryWindow: UsageWindowPayload?
+    let secondaryWindow: UsageWindowPayload?
+
+    init(data: Data) throws {
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let root = object as? [String: Any] else {
+            throw CodexAppServerError.requestFailed(message: "Usage response was not a JSON object.")
+        }
+
+        planType = root["plan_type"] as? String
+        primaryWindow = UsageResponse.lookupWindow(in: root, keys: ["rate_limit", "primary_window"])
+        secondaryWindow = UsageResponse.lookupWindow(in: root, keys: ["rate_limit", "secondary_window"])
+    }
+
+    private static func lookupWindow(in root: [String: Any], keys: [String]) -> UsageWindowPayload? {
+        guard let object = lookupObject(in: root, keys: keys) else { return nil }
+        return UsageWindowPayload(
+            usedPercent: clampPercent(object["used_percent"]),
+            resetAt: unixTimestamp(object["reset_at"]),
+            limitWindowSeconds: doubleValue(object["limit_window_seconds"])
+        )
+    }
+
+    private static func lookupObject(in root: [String: Any], keys: [String]) -> [String: Any]? {
+        var current: Any = root
+        for key in keys {
+            guard let object = current as? [String: Any], let next = object[key] else {
+                return nil
+            }
+            current = next
+        }
+        return current as? [String: Any]
+    }
+
+    private static func doubleValue(_ value: Any?) -> Double? {
+        switch value {
+        case let number as Double:
+            return number
+        case let number as Float:
+            return Double(number)
+        case let number as Int:
+            return Double(number)
+        case let number as Int64:
+            return Double(number)
+        case let number as NSNumber:
+            return number.doubleValue
+        case let text as String:
+            return Double(text)
+        default:
+            return nil
+        }
+    }
+
+    private static func unixTimestamp(_ value: Any?) -> TimeInterval? {
+        doubleValue(value)
+    }
+
+    private static func clampPercent(_ value: Any?) -> Int {
+        guard let number = doubleValue(value) else { return 0 }
+        return min(100, max(0, Int(number.rounded())))
+    }
+}
+
+private struct UsageWindowPayload: Sendable {
+    let usedPercent: Int
+    let resetAt: TimeInterval?
+    let limitWindowSeconds: Double?
+}
