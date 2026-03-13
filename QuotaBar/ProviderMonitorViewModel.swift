@@ -142,9 +142,6 @@ final class ProviderMonitorViewModel: ObservableObject {
             loginContext = context
             activeLoginURL = context.authURL
             loginHasStarted = true
-            if let authURL = context.authURL {
-                NSWorkspace.shared.open(authURL)
-            }
             startPollingLoginURL(using: context)
         } catch {
             addAccountErrorMessage = error.localizedDescription
@@ -206,7 +203,6 @@ final class ProviderMonitorViewModel: ObservableObject {
                 if let url = self.service.currentLoginURL(using: context) {
                     if self.activeLoginURL != url {
                         self.activeLoginURL = url
-                        NSWorkspace.shared.open(url)
                     }
                     return
                 }
