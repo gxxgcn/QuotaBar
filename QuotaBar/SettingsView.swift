@@ -315,12 +315,30 @@ private struct AddCodexAccountSheet: View {
                 }
 
                 if let url = viewModel.activeLoginURL {
-                    Text(url.absoluteString)
-                        .font(.footnote.monospaced())
-                        .textSelection(.enabled)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("If the browser did not open, copy this link and open it manually:")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+
+                        HStack(spacing: 10) {
+                            Text(url.absoluteString)
+                                .font(.footnote.monospaced())
+                                .textSelection(.enabled)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Button("Copy Link") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 12))
+                    }
                 } else if viewModel.loginHasStarted {
-                    Text("If your browser did not open automatically, run `codex login` manually in a terminal with the same account, then import that isolated `auth.json` instead.")
+                    Text("If your browser did not open automatically, wait for the login link to appear here and copy it manually. If no link appears, run `codex login` in Terminal and import the resulting isolated `auth.json`.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

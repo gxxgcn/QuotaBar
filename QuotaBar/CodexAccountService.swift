@@ -12,16 +12,74 @@ final class CodexAccountService {
     }
 
     final class LoginSession {
+        private let outputQueue = DispatchQueue(label: "QuotaBar.CodexLoginSession")
         let homeURL: URL
         let process: Process
         let stdoutPipe: Pipe
         let stderrPipe: Pipe
+        private var mergedOutput = ""
+        private var discoveredAuthURL: URL?
 
         init(homeURL: URL, process: Process, stdoutPipe: Pipe, stderrPipe: Pipe) {
             self.homeURL = homeURL
             self.process = process
             self.stdoutPipe = stdoutPipe
             self.stderrPipe = stderrPipe
+        }
+
+        func appendOutput(_ data: Data) {
+            guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
+            outputQueue.sync {
+                mergedOutput.append(text)
+                if discoveredAuthURL == nil {
+                    discoveredAuthURL = Self.extractURL(from: mergedOutput)
+                }
+            }
+        }
+
+        func authURL() -> URL? {
+            outputQueue.sync { discoveredAuthURL }
+        }
+
+        func combinedOutput() -> String {
+            outputQueue.sync {
+                String(mergedOutput.trimmingCharacters(in: .whitespacesAndNewlines).prefix(2000))
+            }
+        }
+
+        private static func extractURL(from text: String) -> URL? {
+            guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+                return nil
+            }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            let matches = detector.matches(in: text, options: [], range: range)
+            let urls = matches.compactMap(\.url)
+
+            if let preferred = urls.first(where: isPreferredLoginURL) {
+                return preferred
+            }
+
+            return urls.first(where: isFallbackLoginURL)
+        }
+
+        private static func isPreferredLoginURL(_ url: URL) -> Bool {
+            guard url.scheme?.lowercased() == "https" else { return false }
+            guard let host = url.host?.lowercased(), !host.isEmpty else { return false }
+            guard !isLocalHost(host) else { return false }
+
+            return host.contains("openai.com")
+                || host.contains("chatgpt.com")
+                || host.contains("auth.openai")
+        }
+
+        private static func isFallbackLoginURL(_ url: URL) -> Bool {
+            guard ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return false }
+            guard let host = url.host?.lowercased(), !host.isEmpty else { return true }
+            return !isLocalHost(host)
+        }
+
+        private static func isLocalHost(_ host: String) -> Bool {
+            host == "localhost" || host == "127.0.0.1" || host == "::1"
         }
     }
 
@@ -52,7 +110,8 @@ final class CodexAccountService {
     func beginLogin() async throws -> LoginStartContext {
         let homeURL = try createIsolatedCodexHome()
         let session = try startLoginProcess(in: homeURL)
-        return LoginStartContext(authURL: nil, session: session)
+        let authURL = try await awaitLoginURL(in: session)
+        return LoginStartContext(authURL: authURL, session: session)
     }
 
     func completeLogin(using context: LoginStartContext) async throws -> ProviderAccountRecord {
@@ -255,6 +314,8 @@ final class CodexAccountService {
     }
 
     private func cleanup(loginSession: LoginSession) {
+        loginSession.stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        loginSession.stderrPipe.fileHandleForReading.readabilityHandler = nil
         if loginSession.process.isRunning {
             loginSession.process.terminate()
         }
@@ -312,6 +373,24 @@ final class CodexAccountService {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        let session = LoginSession(homeURL: homeURL, process: process, stdoutPipe: stdoutPipe, stderrPipe: stderrPipe)
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            session.appendOutput(data)
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            session.appendOutput(data)
+        }
+
         do {
             try process.run()
         } catch {
@@ -321,7 +400,7 @@ final class CodexAccountService {
             )
         }
 
-        return LoginSession(homeURL: homeURL, process: process, stdoutPipe: stdoutPipe, stderrPipe: stderrPipe)
+        return session
     }
 
     private func environment(with homeURL: URL) -> [String: String] {
@@ -329,17 +408,24 @@ final class CodexAccountService {
     }
 
     private func readCombinedOutput(from session: LoginSession) -> String {
-        let stdoutData = session.stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = session.stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        session.combinedOutput()
+    }
 
-        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
-        let merged = [stdout, stderr]
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    func currentLoginURL(using context: LoginStartContext) -> URL? {
+        context.session.authURL()
+    }
 
-        return String(merged.prefix(2000))
+    private func awaitLoginURL(in session: LoginSession) async throws -> URL? {
+        for _ in 0..<20 {
+            if let url = session.authURL() {
+                return url
+            }
+            if !session.process.isRunning {
+                return session.authURL()
+            }
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        return session.authURL()
     }
 
     private func defaultDisplayName(for email: String) -> String {

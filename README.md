@@ -107,11 +107,46 @@ xcodebuild \
   build
 ```
 
+## Distribution / Release
+
+QuotaBar is intended for `Developer ID` direct distribution, not Mac App Store distribution.
+
+That means:
+
+* the app stays `unsandboxed`
+* it can continue to access the user-installed `codex` CLI
+* distribution should use `Developer ID Application` signing plus notarization
+
+Before releasing:
+
+* keep `ENABLE_APP_SANDBOX = NO`
+* keep `LSUIElement = YES`
+* make sure the release machine has a valid `Developer ID Application` certificate
+
+Recommended release flow:
+
+1. Archive, sign, notarize, and export `QuotaBar.app` manually from Xcode
+2. Put the exported app at `dist/QuotaBar.app`
+3. Run:
+
+```bash
+scripts/build-dmg.sh
+```
+
+The DMG script only packages an existing exported app. It does not archive, sign, or notarize for you.
+
+If the exported app is elsewhere:
+
+```bash
+scripts/build-dmg.sh --app /path/to/QuotaBar.app
+```
+
 ## Notes
 
 * This is not an official OpenAI product.
 * The usage endpoint and auth format are not stable public APIs and may change.
 * API-key-only auth is not supported for quota monitoring. A ChatGPT/Codex bearer token is required.
+* Direct distribution is the supported release model for this project today.
 
 ## Privacy
 

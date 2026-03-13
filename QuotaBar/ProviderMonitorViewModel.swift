@@ -21,6 +21,7 @@ final class ProviderMonitorViewModel: ObservableObject {
     @Published private(set) var loginHasStarted = false
     private var loginContext: CodexAccountService.LoginStartContext?
     private var backgroundRefreshTask: Task<Void, Never>?
+    private var loginURLPollingTask: Task<Void, Never>?
     init(service: CodexAccountService) {
         self.service = service
         reloadAccounts()
@@ -28,6 +29,7 @@ final class ProviderMonitorViewModel: ObservableObject {
 
     deinit {
         backgroundRefreshTask?.cancel()
+        loginURLPollingTask?.cancel()
     }
 
     var summary: ProviderSummary {
@@ -117,6 +119,7 @@ final class ProviderMonitorViewModel: ObservableObject {
     }
 
     func dismissAddAccountSheet() {
+        loginURLPollingTask?.cancel()
         if let loginContext {
             service.cancelLogin(using: loginContext)
         }
@@ -142,6 +145,7 @@ final class ProviderMonitorViewModel: ObservableObject {
             if let authURL = context.authURL {
                 NSWorkspace.shared.open(authURL)
             }
+            startPollingLoginURL(using: context)
         } catch {
             addAccountErrorMessage = error.localizedDescription
         }
@@ -154,6 +158,7 @@ final class ProviderMonitorViewModel: ObservableObject {
         defer { isFinishingLogin = false }
         do {
             _ = try await service.completeLogin(using: loginContext)
+            loginURLPollingTask?.cancel()
             self.loginContext = nil
             activeLoginURL = nil
             loginHasStarted = false
@@ -175,6 +180,7 @@ final class ProviderMonitorViewModel: ObservableObject {
         do {
             let authData = try Data(contentsOf: url)
             _ = try await service.importAccount(from: authData)
+            loginURLPollingTask?.cancel()
             reloadAccounts()
             await refreshAll(reason: "auth-import")
             isPresentingAddAccountSheet = false
@@ -190,6 +196,26 @@ final class ProviderMonitorViewModel: ObservableObject {
     func reopenLoginURL() {
         guard let activeLoginURL else { return }
         NSWorkspace.shared.open(activeLoginURL)
+    }
+
+    private func startPollingLoginURL(using context: CodexAccountService.LoginStartContext) {
+        loginURLPollingTask?.cancel()
+        loginURLPollingTask = Task { [weak self] in
+            for _ in 0..<40 {
+                guard let self, !Task.isCancelled else { return }
+                if let url = self.service.currentLoginURL(using: context) {
+                    if self.activeLoginURL != url {
+                        self.activeLoginURL = url
+                        NSWorkspace.shared.open(url)
+                    }
+                    return
+                }
+                if !context.session.process.isRunning {
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
     }
 
     func renameAccount(_ account: ProviderAccountRecord, to name: String) {

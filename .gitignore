@@ -2,6 +2,7 @@
 build/
 DerivedData/
 *.build/
+dist/
 
 # Xcode user data
 *.xcuserdatad/

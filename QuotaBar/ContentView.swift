@@ -72,17 +72,36 @@ struct ContentView: View {
     private var footer: some View {
         HStack {
             Button {
-                openWindow(id: "settings")
-                NSApp.activate(ignoringOtherApps: true)
+                showSettingsWindow()
             } label: {
                 Label("Settings", systemImage: "gearshape")
             }
             .buttonStyle(.plain)
             Spacer()
             Button("Quit") {
-                NSApplication.shared.terminate(nil)
+                quitApplication()
             }
         }
+    }
+
+    private func showSettingsWindow() {
+        openWindow(id: "settings")
+        NSApp.activate(ignoringOtherApps: true)
+
+        DispatchQueue.main.async {
+            let targetWindow = NSApp.windows.first {
+                $0.identifier?.rawValue == "settings" || $0.title == "QuotaBar Settings"
+            }
+            targetWindow?.makeKeyAndOrderFront(nil)
+            targetWindow?.orderFrontRegardless()
+        }
+    }
+
+    private func quitApplication() {
+        for window in NSApp.windows {
+            window.close()
+        }
+        NSApp.terminate(nil)
     }
 
     private var emptyState: some View {
