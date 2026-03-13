@@ -113,7 +113,13 @@ create-dmg \
   "$DMG_PATH" \
   "$APP_OUTPUT_DIR"
 
+echo "==> Cleaning output directory"
+for artifact in "$OUTPUT_DIR"/*; do
+  if [[ "$artifact" != "$DMG_PATH" ]]; then
+    rm -rf "$artifact"
+  fi
+done
+
 echo
 echo "Artifacts:"
-echo "  App: $APP_OUTPUT_PATH"
 echo "  DMG: $DMG_PATH"
