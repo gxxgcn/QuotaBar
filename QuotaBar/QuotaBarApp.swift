@@ -14,11 +14,12 @@ struct QuotaBarApp: App {
       let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
       let modelContainer = try ModelContainer(for: schema, configurations: [configuration])
       let credentialStore = KeychainCredentialStore()
+      let sessionBackupService = CodexSessionBackupService()
       let service = CodexAccountService(
         modelContext: modelContainer.mainContext,
         credentialStore: credentialStore
       )
-      let viewModel = ProviderMonitorViewModel(service: service)
+      let viewModel = ProviderMonitorViewModel(service: service, sessionBackupService: sessionBackupService)
       
       self.sharedModelContainer = modelContainer
       _viewModel = StateObject(wrappedValue: viewModel)

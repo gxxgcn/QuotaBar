@@ -8,22 +8,35 @@ final class ProviderMonitorViewModel: ObservableObject {
     private static let backgroundRefreshInterval: Duration = .seconds(30 * 60)
 
     private let service: CodexAccountService
+    private let sessionBackupService: CodexSessionBackupService
 
     @Published private(set) var accounts: [ProviderAccountRecord] = []
     @Published var snapshotsByAccountID: [UUID: CodexUsageSnapshot] = [:]
     @Published private(set) var isRefreshingAll = false
     @Published private(set) var backgroundRefreshStarted = false
-    @Published private(set) var isPresentingAddAccountSheet = false
     @Published private(set) var activeLoginURL: URL?
     @Published private(set) var addAccountErrorMessage: String?
+    @Published private(set) var sessionExportDirectoryURL: URL?
+    @Published private(set) var backupStatusMessage: String?
+    @Published private(set) var backupErrorMessage: String?
+    @Published private(set) var isExportingSession = false
+    @Published private(set) var isImportingSession = false
+    @Published private(set) var exportableWorkspaces: [CodexBackupWorkspaceGroup] = []
+    @Published var selectedExportThreadIDs: Set<String> = []
+    @Published private(set) var selectedImportArchiveURL: URL?
+    @Published private(set) var importPreview: CodexBackupArchivePreview?
+    @Published private(set) var importWorkspaceOverrides: [String: URL] = [:]
     @Published private(set) var isStartingLogin = false
     @Published private(set) var isFinishingLogin = false
     @Published private(set) var loginHasStarted = false
     private var loginContext: CodexAccountService.LoginStartContext?
     private var backgroundRefreshTask: Task<Void, Never>?
     private var loginURLPollingTask: Task<Void, Never>?
-    init(service: CodexAccountService) {
+
+    init(service: CodexAccountService, sessionBackupService: CodexSessionBackupService) {
         self.service = service
+        self.sessionBackupService = sessionBackupService
+        self.sessionExportDirectoryURL = sessionBackupService.exportDirectoryURL
         reloadAccounts()
     }
 
@@ -113,17 +126,155 @@ final class ProviderMonitorViewModel: ObservableObject {
         reloadAccounts()
     }
 
-    func presentAddAccountSheet() {
-        addAccountErrorMessage = nil
-        isPresentingAddAccountSheet = true
+    func setSessionExportDirectory(_ url: URL) {
+        let standardized = url.standardizedFileURL
+        sessionBackupService.exportDirectoryURL = standardized
+        sessionExportDirectoryURL = standardized
+        backupErrorMessage = nil
     }
 
-    func dismissAddAccountSheet() {
+    func prepareExportSelection() {
+        do {
+            exportableWorkspaces = try sessionBackupService.listExportableWorkspaces()
+            selectedExportThreadIDs = []
+            backupErrorMessage = nil
+        } catch {
+            exportableWorkspaces = []
+            selectedExportThreadIDs = []
+            backupErrorMessage = error.localizedDescription
+        }
+    }
+
+    func toggleExportSelection(for threadID: String) {
+        if selectedExportThreadIDs.contains(threadID) {
+            selectedExportThreadIDs.remove(threadID)
+        } else {
+            selectedExportThreadIDs.insert(threadID)
+        }
+    }
+
+    func setWorkspaceSelection(_ isSelected: Bool, workspaceID: String) {
+        guard let workspace = exportableWorkspaces.first(where: { $0.id == workspaceID }) else { return }
+        let threadIDs = workspace.threads.map(\.id)
+        if isSelected {
+            selectedExportThreadIDs.formUnion(threadIDs)
+        } else {
+            selectedExportThreadIDs.subtract(threadIDs)
+        }
+    }
+
+    func selectedThreadCount(for workspaceID: String) -> Int {
+        guard let workspace = exportableWorkspaces.first(where: { $0.id == workspaceID }) else { return 0 }
+        return workspace.threads.reduce(into: 0) { count, thread in
+            if selectedExportThreadIDs.contains(thread.id) {
+                count += 1
+            }
+        }
+    }
+
+    func exportSelectedThreads() async {
+        guard let directoryURL = sessionExportDirectoryURL else {
+            backupErrorMessage = "Set an export directory before exporting."
+            return
+        }
+        guard !selectedExportThreadIDs.isEmpty else {
+            backupErrorMessage = "Choose at least one thread before exporting."
+            return
+        }
+        guard !isExportingSession else { return }
+        backupErrorMessage = nil
+        backupStatusMessage = nil
+        isExportingSession = true
+        defer { isExportingSession = false }
+
+        do {
+            let archive = try sessionBackupService.exportBackup(
+                threadIDs: Array(selectedExportThreadIDs),
+                to: directoryURL
+            )
+            backupStatusMessage = "Exported \(archive.threadCount) thread(s) across \(archive.projectCount) project(s) to `\(archive.archiveURL.path)` (\(ByteCountFormatter.string(fromByteCount: Int64(archive.fileSizeBytes), countStyle: .file)))."
+        } catch {
+            backupErrorMessage = error.localizedDescription
+        }
+    }
+
+    func prepareImportBackup(from archiveURL: URL) {
+        backupErrorMessage = nil
+        backupStatusMessage = nil
+        sessionBackupService.cleanupImportPreview(importPreview)
+        do {
+            let preview = try sessionBackupService.inspectBackupArchive(at: archiveURL)
+            selectedImportArchiveURL = archiveURL
+            importPreview = preview
+            importWorkspaceOverrides = Dictionary(uniqueKeysWithValues: preview.projects.compactMap { project in
+                let url = URL(fileURLWithPath: project.sourceWorkspacePath, isDirectory: true)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    return (project.sourceWorkspacePath, url)
+                }
+                return nil
+            })
+        } catch {
+            selectedImportArchiveURL = nil
+            importPreview = nil
+            importWorkspaceOverrides = [:]
+            backupErrorMessage = error.localizedDescription
+        }
+    }
+
+    func setImportWorkspace(_ url: URL, for sourceWorkspacePath: String) {
+        importWorkspaceOverrides[sourceWorkspacePath] = url.standardizedFileURL
+        backupErrorMessage = nil
+    }
+
+    func clearImportWorkspace(for sourceWorkspacePath: String) {
+        importWorkspaceOverrides.removeValue(forKey: sourceWorkspacePath)
+        backupErrorMessage = nil
+    }
+
+    func discardImportPreview() {
+        sessionBackupService.cleanupImportPreview(importPreview)
+        importPreview = nil
+        selectedImportArchiveURL = nil
+        importWorkspaceOverrides = [:]
+    }
+
+    var canImportPreparedBackup: Bool {
+        guard let importPreview else { return false }
+        return importPreview.projects.allSatisfy { importWorkspaceOverrides[$0.sourceWorkspacePath] != nil }
+    }
+
+    func importPreparedBackup() async {
+        guard let importPreview else {
+            backupErrorMessage = "Choose a backup file before importing."
+            return
+        }
+        guard !isImportingSession else { return }
+        guard canImportPreparedBackup else {
+            backupErrorMessage = "Choose a destination workspace for each project before importing."
+            return
+        }
+        backupErrorMessage = nil
+        backupStatusMessage = nil
+        isImportingSession = true
+        defer { isImportingSession = false }
+
+        do {
+            let archive = try sessionBackupService.importBackupArchive(
+                preview: importPreview,
+                workspaceOverrides: importWorkspaceOverrides
+            )
+            backupStatusMessage = "Imported \(archive.threadCount) thread(s) from `\(archive.archiveURL.path)`."
+            discardImportPreview()
+        } catch {
+            backupErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func resetLoginFlow(cancelProcess: Bool) {
         loginURLPollingTask?.cancel()
-        if let loginContext {
+        if cancelProcess, let loginContext {
             service.cancelLogin(using: loginContext)
         }
-        isPresentingAddAccountSheet = false
         activeLoginURL = nil
         addAccountErrorMessage = nil
         isStartingLogin = false
@@ -134,6 +285,9 @@ final class ProviderMonitorViewModel: ObservableObject {
 
     func beginCodexLogin() async {
         guard !isStartingLogin else { return }
+        if loginContext != nil {
+            resetLoginFlow(cancelProcess: true)
+        }
         addAccountErrorMessage = nil
         isStartingLogin = true
         defer { isStartingLogin = false }
@@ -159,15 +313,11 @@ final class ProviderMonitorViewModel: ObservableObject {
             self.loginContext = nil
             activeLoginURL = nil
             loginHasStarted = false
-            isPresentingAddAccountSheet = false
             reloadAccounts()
             await refreshAll(reason: "account-added")
             return true
         } catch {
             addAccountErrorMessage = error.localizedDescription
-            if !isPresentingAddAccountSheet {
-                self.loginContext = nil
-            }
             return false
         }
     }
@@ -180,7 +330,6 @@ final class ProviderMonitorViewModel: ObservableObject {
             loginURLPollingTask?.cancel()
             reloadAccounts()
             await refreshAll(reason: "auth-import")
-            isPresentingAddAccountSheet = false
             loginHasStarted = false
             activeLoginURL = nil
             return true
@@ -241,6 +390,7 @@ final class ProviderMonitorViewModel: ObservableObject {
             addAccountErrorMessage = error.localizedDescription
         }
     }
+
 }
 
 struct ProviderSummary {

@@ -12,7 +12,10 @@ enum PreviewFactory {
             modelContext: container.mainContext,
             credentialStore: PreviewCredentialStore()
         )
-        let viewModel = ProviderMonitorViewModel(service: service)
+        let viewModel = ProviderMonitorViewModel(
+            service: service,
+            sessionBackupService: CodexSessionBackupService()
+        )
 
         if (try? service.fetchAccounts().isEmpty) == true {
             let account = ProviderAccountRecord(
