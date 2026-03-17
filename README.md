@@ -1,13 +1,14 @@
 # QuotaBar
 
-QuotaBar is a macOS menu bar app for monitoring Codex usage across multiple isolated accounts.
+QuotaBar is a macOS menu bar app that helps you track Codex quota usage from the menu bar and move selected Codex threads between devices, without juggling multiple terminals, browser sessions, or shared local state.
 
-It is designed for people who want:
+It is a good fit if you want:
 
 * a status bar app instead of a full desktop window
 * multiple Codex accounts under one app
 * isolated account storage without touching the default `~/.codex`
 * quick visibility into the current 5-hour and weekly remaining quota
+* a simple way to carry selected Codex threads and session state between machines
 
 ## Screenshots
 
