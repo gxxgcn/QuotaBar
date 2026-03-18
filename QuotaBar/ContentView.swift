@@ -126,13 +126,12 @@ private struct AccountCardView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: 4) {
                 Text(account.displayName)
                     .font(.subheadline.bold())
                     .lineLimit(1)
                     .truncationMode(.middle)
-                PlanTag(text: account.planType.capitalized)
-                Spacer(minLength: 8)
+                Spacer()
                 statusBadge
             }
             
@@ -158,7 +157,8 @@ private struct AccountCardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             
-            HStack {
+            HStack(spacing: 4) {
+                PlanTag(text: account.planType.capitalized)
                 if isLocalAccount {
                     LocalTag()
                 }
@@ -170,7 +170,8 @@ private struct AccountCardView: View {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Text(isLocalAccount ? "Using Locally" : "Use Locally")
+                        Text(isLocalAccount ? "Using" : "Use")
+                            .font(.subheadline)
                     }
                 }
                 .buttonStyle(.bordered)
@@ -178,8 +179,7 @@ private struct AccountCardView: View {
                 .disabled(isLocalAccount || isSwitchingToLocal)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             LinearGradient(
@@ -199,8 +199,8 @@ private struct AccountCardView: View {
     }
     
     private func quotaBarRow(title: String, window: RateLimitWindowSnapshot?, resetText: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
                 Text(title)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -218,7 +218,7 @@ private struct AccountCardView: View {
             }
             
             GeometryReader { proxy in
-                let height = CGFloat(7)
+                let height = CGFloat(4)
                 let width = proxy.size.width
                 let progress = CGFloat(progressValue(window))
                 let fillWidth = max(height * 1.4, width * progress)
@@ -249,7 +249,7 @@ private struct AccountCardView: View {
                         .frame(width: fillWidth)
                 }
             }
-            .frame(height: 7)
+            .frame(height: 4)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -273,10 +273,14 @@ private struct AccountCardView: View {
         
         Text(style.0)
             .font(.system(size: 8 ))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
             .background(style.1.opacity(0.14), in: Capsule())
             .foregroundStyle(style.1)
+            .overlay {
+                Capsule()
+                    .strokeBorder(style.1.opacity(0.16))
+            }
             .lineLimit(1)
     }
     
