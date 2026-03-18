@@ -17,7 +17,6 @@ final class ProviderMonitorViewModel: ObservableObject {
     @Published private(set) var activeLoginURL: URL?
     @Published private(set) var addAccountErrorMessage: String?
     @Published private(set) var sessionExportDirectoryURL: URL?
-    @Published private(set) var backupStatusMessage: String?
     @Published private(set) var backupErrorMessage: String?
     @Published private(set) var isExportingSession = false
     @Published private(set) var isImportingSession = false
@@ -29,6 +28,11 @@ final class ProviderMonitorViewModel: ObservableObject {
     @Published private(set) var isStartingLogin = false
     @Published private(set) var isFinishingLogin = false
     @Published private(set) var loginHasStarted = false
+    @Published private(set) var localCodexAccountID: UUID?
+    @Published private(set) var localCodexHasAuthFile = false
+    @Published private(set) var localCodexAuthFileURL: URL?
+    @Published private(set) var localCodexErrorMessage: String?
+    @Published private(set) var switchingLocalAccountID: UUID?
     private var loginContext: CodexAccountService.LoginStartContext?
     private var backgroundRefreshTask: Task<Void, Never>?
     private var loginURLPollingTask: Task<Void, Never>?
@@ -82,6 +86,7 @@ final class ProviderMonitorViewModel: ObservableObject {
         guard !backgroundRefreshStarted else { return }
         backgroundRefreshStarted = true
         await refreshAll(reason: "startup")
+        await refreshLocalCodexAccount()
         backgroundRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.backgroundRefreshInterval)
@@ -92,6 +97,7 @@ final class ProviderMonitorViewModel: ObservableObject {
 
     func panelDidOpen() {
         reloadAccounts()
+        Task { await refreshLocalCodexAccount() }
     }
 
     func reloadAccounts() {
@@ -99,6 +105,21 @@ final class ProviderMonitorViewModel: ObservableObject {
             accounts = try service.fetchAccounts()
         } catch {
             addAccountErrorMessage = error.localizedDescription
+        }
+    }
+
+    func refreshLocalCodexAccount() async {
+        do {
+            let status = try await service.localCodexAccountStatus()
+            localCodexAccountID = status.matchedAccountID
+            localCodexHasAuthFile = status.hasAuthFile
+            localCodexAuthFileURL = status.authFileURL
+            localCodexErrorMessage = nil
+        } catch {
+            localCodexAccountID = nil
+            localCodexHasAuthFile = false
+            localCodexAuthFileURL = nil
+            localCodexErrorMessage = error.localizedDescription
         }
     }
 
@@ -134,7 +155,6 @@ final class ProviderMonitorViewModel: ObservableObject {
     }
 
     func resetBackupTabState() {
-        backupStatusMessage = nil
         backupErrorMessage = nil
         exportableWorkspaces = []
         selectedExportThreadIDs = []
@@ -185,16 +205,15 @@ final class ProviderMonitorViewModel: ObservableObject {
 
     func exportSelectedThreads() async {
         guard let directoryURL = sessionExportDirectoryURL else {
-            backupErrorMessage = "Set an export directory before exporting."
+            backupErrorMessage = "Choose an export folder first."
             return
         }
         guard !selectedExportThreadIDs.isEmpty else {
-            backupErrorMessage = "Choose at least one thread before exporting."
+            backupErrorMessage = "Choose at least one thread."
             return
         }
         guard !isExportingSession else { return }
         backupErrorMessage = nil
-        backupStatusMessage = nil
         isExportingSession = true
         defer { isExportingSession = false }
 
@@ -203,15 +222,18 @@ final class ProviderMonitorViewModel: ObservableObject {
                 threadIDs: Array(selectedExportThreadIDs),
                 to: directoryURL
             )
-            backupStatusMessage = "Exported \(archive.threadCount) thread(s) across \(archive.projectCount) project(s) to `\(archive.archiveURL.path)` (\(ByteCountFormatter.string(fromByteCount: Int64(archive.fileSizeBytes), countStyle: .file)))."
+            await presentSystemAlert(LocalCodexAlert(
+                title: "Export Complete",
+                message: archive.threadCount == 1 ? "1 thread exported." : "\(archive.threadCount) threads exported."
+            ))
         } catch {
             backupErrorMessage = error.localizedDescription
+            await presentSystemAlert(exportFailureAlert())
         }
     }
 
     func prepareImportBackup(from archiveURL: URL) {
         backupErrorMessage = nil
-        backupStatusMessage = nil
         sessionBackupService.cleanupImportPreview(importPreview)
         do {
             let preview = try sessionBackupService.inspectBackupArchive(at: archiveURL)
@@ -256,16 +278,15 @@ final class ProviderMonitorViewModel: ObservableObject {
 
     func importPreparedBackup() async {
         guard let importPreview else {
-            backupErrorMessage = "Choose a backup file before importing."
+            backupErrorMessage = "Choose a backup file first."
             return
         }
         guard !isImportingSession else { return }
         guard canImportPreparedBackup else {
-            backupErrorMessage = "Choose a destination workspace for each project before importing."
+            backupErrorMessage = "Choose a destination workspace for each project."
             return
         }
         backupErrorMessage = nil
-        backupStatusMessage = nil
         isImportingSession = true
         defer { isImportingSession = false }
 
@@ -274,10 +295,14 @@ final class ProviderMonitorViewModel: ObservableObject {
                 preview: importPreview,
                 workspaceOverrides: importWorkspaceOverrides
             )
-            backupStatusMessage = "Imported \(archive.threadCount) thread(s) from `\(archive.archiveURL.path)`."
             discardImportPreview()
+            await presentSystemAlert(LocalCodexAlert(
+                title: "Import Complete",
+                message: archive.threadCount == 1 ? "1 thread imported." : "\(archive.threadCount) threads imported."
+            ))
         } catch {
             backupErrorMessage = error.localizedDescription
+            await presentSystemAlert(importFailureAlert())
         }
     }
 
@@ -326,6 +351,7 @@ final class ProviderMonitorViewModel: ObservableObject {
             loginHasStarted = false
             reloadAccounts()
             await refreshAll(reason: "account-added")
+            await refreshLocalCodexAccount()
             return true
         } catch {
             addAccountErrorMessage = error.localizedDescription
@@ -343,6 +369,7 @@ final class ProviderMonitorViewModel: ObservableObject {
             await refreshAll(reason: "auth-import")
             loginHasStarted = false
             activeLoginURL = nil
+            await refreshLocalCodexAccount()
             return true
         } catch {
             addAccountErrorMessage = error.localizedDescription
@@ -397,11 +424,84 @@ final class ProviderMonitorViewModel: ObservableObject {
             try await service.deleteAccount(id: account.id)
             snapshotsByAccountID.removeValue(forKey: account.id)
             reloadAccounts()
+            await refreshLocalCodexAccount()
         } catch {
             addAccountErrorMessage = error.localizedDescription
         }
     }
 
+    func switchLocalCodexAccount(to account: ProviderAccountRecord) async {
+        guard switchingLocalAccountID == nil else { return }
+        switchingLocalAccountID = account.id
+        localCodexErrorMessage = nil
+        defer { switchingLocalAccountID = nil }
+
+        do {
+            let result = try await service.switchLocalCodexAccount(to: account)
+            await refreshLocalCodexAccount()
+            await presentSystemAlert(makeSwitchSuccessAlert(for: account, result: result))
+        } catch {
+            localCodexErrorMessage = error.localizedDescription
+            await presentSystemAlert(switchFailureAlert())
+        }
+    }
+
+    func isLocalCodexAccount(_ account: ProviderAccountRecord) -> Bool {
+        localCodexAccountID == account.id
+    }
+
+    func isSwitchingLocalCodexAccount(_ account: ProviderAccountRecord) -> Bool {
+        switchingLocalAccountID == account.id
+    }
+
+    private func makeSwitchSuccessAlert(
+        for account: ProviderAccountRecord,
+        result _: LocalCodexSwitchResult
+    ) -> LocalCodexAlert {
+        return LocalCodexAlert(
+            title: "Account Updated",
+            message: "Now using \(account.displayName). Restart Codex if it is open."
+        )
+    }
+
+    private func switchFailureAlert() -> LocalCodexAlert {
+        LocalCodexAlert(
+            title: "Switch Failed",
+            message: "We couldn't switch the local Codex account."
+        )
+    }
+
+    private func exportFailureAlert() -> LocalCodexAlert {
+        LocalCodexAlert(
+            title: "Export Failed",
+            message: "We couldn't export the selected threads."
+        )
+    }
+
+    private func importFailureAlert() -> LocalCodexAlert {
+        LocalCodexAlert(
+            title: "Import Failed",
+            message: "We couldn't import this backup."
+        )
+    }
+
+    private func presentSystemAlert(_ alert: LocalCodexAlert) async {
+        NSApp.activate(ignoringOtherApps: true)
+
+        let nsAlert = NSAlert()
+        nsAlert.alertStyle = .informational
+        nsAlert.messageText = alert.title
+        nsAlert.informativeText = alert.message
+        nsAlert.addButton(withTitle: "OK")
+        _ = nsAlert.runModal()
+    }
+
+}
+
+struct LocalCodexAlert: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
 }
 
 struct ProviderSummary {

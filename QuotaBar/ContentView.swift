@@ -4,46 +4,53 @@ import SwiftUI
 struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var viewModel: ProviderMonitorViewModel
-
+    
+    let columns = [
+        GridItem(.flexible()),
+        GridItem(.flexible())
+    ]
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    if viewModel.accounts.isEmpty {
-                        emptyState
-                    } else {
+            if viewModel.accounts.isEmpty {
+                emptyState
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 8) {
                         ForEach(viewModel.accounts) { account in
                             AccountCardView(
                                 account: account,
-                                snapshot: viewModel.snapshotsByAccountID[account.id]
+                                snapshot: viewModel.snapshotsByAccountID[account.id],
+                                isLocalAccount: viewModel.isLocalCodexAccount(account),
+                                isSwitchingToLocal: viewModel.isSwitchingLocalCodexAccount(account),
+                                onSwitchToLocal: {
+                                    Task { await viewModel.switchLocalCodexAccount(to: account) }
+                                }
                             )
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .scrollIndicators(.hidden)
             }
-            .scrollIndicators(.hidden)
             Divider()
             footer
         }
         .padding(12)
-        .frame(width: 400, height: 500)
+        .frame(width: 450, height: 500)
         .task {
             viewModel.panelDidOpen()
         }
     }
-
+    
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Codex")
-                        .font(.title3.weight(.semibold))
-                    Text(summaryText)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    Text("QuotaBar")
+                        .font(.title2.weight(.semibold))
                 }
                 Spacer()
                 Button {
@@ -53,22 +60,14 @@ struct ContentView: View {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Label("Refresh All", systemImage: "arrow.clockwise")
+                        Image(systemName: "arrow.clockwise")
                     }
                 }
                 .buttonStyle(.bordered)
             }
-
-            if let hottestAccountName = viewModel.summary.hottestAccountName {
-                Text("\(hottestAccountName) is highest at \(viewModel.summary.hottestUsagePercent)% used")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
         }
     }
-
+    
     private var footer: some View {
         HStack {
             Button {
@@ -83,11 +82,11 @@ struct ContentView: View {
             }
         }
     }
-
+    
     private func showSettingsWindow() {
         openWindow(id: "settings")
         NSApp.activate(ignoringOtherApps: true)
-
+        
         DispatchQueue.main.async {
             let targetWindow = NSApp.windows.first {
                 $0.identifier?.rawValue == "settings" || $0.title == "QuotaBar Settings"
@@ -96,14 +95,14 @@ struct ContentView: View {
             targetWindow?.orderFrontRegardless()
         }
     }
-
+    
     private func quitApplication() {
         for window in NSApp.windows {
             window.close()
         }
         NSApp.terminate(nil)
     }
-
+    
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("No Codex accounts")
@@ -116,59 +115,67 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial, in: .rect(cornerRadius: 16))
     }
-
-    private var summaryText: String {
-        let summary = viewModel.summary
-        let noun = summary.accountCount == 1 ? "account" : "accounts"
-        if summary.accountCount == 0 {
-            return "No accounts configured"
-        }
-        if summary.syncedCount == 0 {
-            return "\(summary.accountCount) \(noun) waiting for sync"
-        }
-        if summary.unhealthyCount == 0 {
-            return "\(summary.accountCount) \(noun) healthy"
-        }
-        return "\(summary.accountCount) \(noun), \(summary.unhealthyCount) need attention"
-    }
 }
 
 private struct AccountCardView: View {
     let account: ProviderAccountRecord
     let snapshot: CodexUsageSnapshot?
-
+    let isLocalAccount: Bool
+    let isSwitchingToLocal: Bool
+    let onSwitchToLocal: () -> Void
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
                 Text(account.displayName)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.subheadline.bold())
                     .lineLimit(1)
                     .truncationMode(.middle)
                 PlanTag(text: account.planType.capitalized)
                 Spacer(minLength: 8)
                 statusBadge
             }
-
-            HStack(alignment: .top, spacing: 10) {
+            
+            VStack(alignment: .leading, spacing: 10) {
                 quotaBarRow(
                     title: "5h",
                     window: snapshot?.preferredRateLimit?.primary,
                     resetText: shortTimeString(snapshot?.preferredRateLimit?.primary?.resetsAt)
                 )
-
+                
                 quotaBarRow(
                     title: "Week",
                     window: snapshot?.preferredRateLimit?.secondary,
                     resetText: shortDayString(snapshot?.preferredRateLimit?.secondary?.resetsAt)
                 )
             }
-
+            
             if let error = snapshot?.lastError {
                 Text(error)
                     .font(.caption2)
                     .foregroundStyle(.red)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            
+            HStack {
+                if isLocalAccount {
+                    LocalTag()
+                }
+                Spacer()
+                Button {
+                    onSwitchToLocal()
+                } label: {
+                    if isSwitchingToLocal {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text(isLocalAccount ? "Using Locally" : "Use Locally")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isLocalAccount || isSwitchingToLocal)
             }
         }
         .padding(.horizontal, 12)
@@ -190,7 +197,7 @@ private struct AccountCardView: View {
                 .strokeBorder(Color.white.opacity(0.075))
         }
     }
-
+    
     private func quotaBarRow(title: String, window: RateLimitWindowSnapshot?, resetText: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
@@ -209,14 +216,14 @@ private struct AccountCardView: View {
                     .monospacedDigit()
                     .lineLimit(1)
             }
-
+            
             GeometryReader { proxy in
                 let height = CGFloat(7)
                 let width = proxy.size.width
                 let progress = CGFloat(progressValue(window))
                 let fillWidth = max(height * 1.4, width * progress)
                 let tint = barColor(window)
-
+                
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 4)
                         .fill(
@@ -246,7 +253,7 @@ private struct AccountCardView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
-
+    
     @ViewBuilder
     private var statusBadge: some View {
         let style: (String, Color) = switch account.syncStatus {
@@ -263,26 +270,26 @@ private struct AccountCardView: View {
         case .idle:
             ("Idle", .secondary)
         }
-
+        
         Text(style.0)
-            .font(.caption2.weight(.semibold))
+            .font(.system(size: 8 ))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(style.1.opacity(0.14), in: Capsule())
             .foregroundStyle(style.1)
             .lineLimit(1)
     }
-
+    
     private func remainingString(_ window: RateLimitWindowSnapshot?) -> String {
         guard let window else { return "N/A" }
         return "\(window.percentLeft)% left"
     }
-
+    
     private func progressValue(_ window: RateLimitWindowSnapshot?) -> Double {
         guard let window else { return 0.08 }
         return min(max(Double(window.percentLeft) / 100, 0.04), 1)
     }
-
+    
     private func barColor(_ window: RateLimitWindowSnapshot?) -> Color {
         guard let percentLeft = window?.percentLeft else { return .secondary }
         switch percentLeft {
@@ -296,24 +303,40 @@ private struct AccountCardView: View {
             return Color(red: 0.88, green: 0.24, blue: 0.23)
         }
     }
-
+    
     private func shortTimeString(_ date: Date?) -> String {
         guard let date else { return "--:--" }
         return date.formatted(date: .omitted, time: .shortened)
     }
-
+    
     private func shortDayString(_ date: Date?) -> String {
         guard let date else { return "--- --" }
         return date.formatted(.dateTime.month(.abbreviated).day())
     }
 }
 
+private struct LocalTag: View {
+    var body: some View {
+        Text("Local")
+            .font(.system(size: 8 ))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.green.opacity(0.14), in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(Color.green.opacity(0.18))
+            }
+            .foregroundStyle(Color.green)
+            .lineLimit(1)
+    }
+}
+
 private struct PlanTag: View {
     let text: String
-
+    
     var body: some View {
         Text(text)
-            .font(.caption2.weight(.semibold))
+            .font(.system(size: 8 ))
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
             .background(Color.blue.opacity(0.12), in: Capsule())

@@ -291,10 +291,6 @@ struct SettingsView: View {
                     .buttonStyle(.bordered)
                 }
 
-                if let status = viewModel.backupStatusMessage {
-                    inlineSuccess(status)
-                }
-
                 if let error = viewModel.backupErrorMessage {
                     inlineError(error)
                 }
@@ -355,16 +351,6 @@ struct SettingsView: View {
             .textSelection(.enabled)
     }
 
-    private func inlineSuccess(_ message: String) -> some View {
-        Text(message)
-            .font(.footnote)
-            .foregroundStyle(.green)
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.green.opacity(0.08), in: .rect(cornerRadius: 12))
-            .textSelection(.enabled)
-    }
-
     private func accountCard(_ account: ProviderAccountRecord) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 14) {
@@ -385,6 +371,10 @@ struct SettingsView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .textSelection(.enabled)
+
+                    if viewModel.isLocalCodexAccount(account) {
+                        SettingsLocalBadge()
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -417,6 +407,19 @@ struct SettingsView: View {
                 detailPill(title: "Plan", value: account.planType.capitalized)
                 detailPill(title: "Synced", value: syncText(account.lastSyncedAt))
                 Spacer(minLength: 0)
+
+                Button {
+                    Task { await viewModel.switchLocalCodexAccount(to: account) }
+                } label: {
+                    if viewModel.isSwitchingLocalCodexAccount(account) {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text(viewModel.isLocalCodexAccount(account) ? "Using Locally" : "Switch To Local Codex")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isLocalCodexAccount(account) || viewModel.isSwitchingLocalCodexAccount(account))
 
                 Button("Delete", role: .destructive) {
                     Task { await viewModel.deleteAccount(account) }
@@ -525,6 +528,17 @@ struct SettingsView: View {
         panel.prompt = "Choose"
         panel.message = "Choose a QuotaBar backup archive"
         return panel.runModal() == .OK ? panel.url : nil
+    }
+}
+
+private struct SettingsLocalBadge: View {
+    var body: some View {
+        Text("Local Codex")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.green)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color.green.opacity(0.12), in: Capsule())
     }
 }
 

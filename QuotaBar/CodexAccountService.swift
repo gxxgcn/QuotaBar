@@ -1,5 +1,17 @@
+import Darwin
 import Foundation
 import SwiftData
+
+struct LocalCodexAccountStatus: Sendable {
+    let matchedAccountID: UUID?
+    let hasAuthFile: Bool
+    let authFileURL: URL
+}
+
+struct LocalCodexSwitchResult: Sendable {
+    let authFileURL: URL
+    let backupURL: URL?
+}
 
 @MainActor
 final class CodexAccountService {
@@ -27,7 +39,7 @@ final class CodexAccountService {
             self.stderrPipe = stderrPipe
         }
 
-        func appendOutput(_ data: Data) {
+        nonisolated func appendOutput(_ data: Data) {
             guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
             outputQueue.sync {
                 mergedOutput.append(text)
@@ -37,11 +49,11 @@ final class CodexAccountService {
             }
         }
 
-        func authURL() -> URL? {
+        nonisolated func authURL() -> URL? {
             outputQueue.sync { discoveredAuthURL }
         }
 
-        func combinedOutput() -> String {
+        nonisolated func combinedOutput() -> String {
             outputQueue.sync {
                 String(mergedOutput.trimmingCharacters(in: .whitespacesAndNewlines).prefix(2000))
             }
@@ -86,14 +98,18 @@ final class CodexAccountService {
     private let modelContext: ModelContext
     private let credentialStore: CredentialStore
     private let fileManager: FileManager
+    private let localCodexHomeURL: URL
+
     init(
         modelContext: ModelContext,
         credentialStore: CredentialStore,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        localCodexHomeURL: URL? = nil
     ) {
         self.modelContext = modelContext
         self.credentialStore = credentialStore
         self.fileManager = fileManager
+        self.localCodexHomeURL = localCodexHomeURL ?? Self.resolveDefaultCodexHomeURL(fileManager: fileManager)
     }
 
     func fetchAccounts(providerKind: ProviderKind = .codex) throws -> [ProviderAccountRecord] {
@@ -199,6 +215,56 @@ final class CodexAccountService {
         modelContext.delete(record)
         try modelContext.save()
         try await credentialStore.deleteAuthData(for: id)
+    }
+
+    func localCodexAccountStatus() async throws -> LocalCodexAccountStatus {
+        let authFileURL = localAuthFileURL()
+        guard fileManager.fileExists(atPath: authFileURL.path) else {
+            return LocalCodexAccountStatus(matchedAccountID: nil, hasAuthFile: false, authFileURL: authFileURL)
+        }
+
+        let authData: Data
+        do {
+            authData = try Data(contentsOf: authFileURL)
+        } catch {
+            throw CodexAppServerError.requestFailed(message: "Could not read local auth from `\(authFileURL.path)`. \(error.localizedDescription)")
+        }
+
+        let identity = try localIdentity(from: authData)
+        let matchedAccountID = try fetchAccounts()
+            .first(where: { $0.providerKind == .codex && $0.remoteAccountID == identity.accountID })?
+            .id
+
+        return LocalCodexAccountStatus(
+            matchedAccountID: matchedAccountID,
+            hasAuthFile: true,
+            authFileURL: authFileURL
+        )
+    }
+
+    func switchLocalCodexAccount(to account: ProviderAccountRecord) async throws -> LocalCodexSwitchResult {
+        let authData = try await credentialStore.loadAuthData(for: account.id)
+        _ = try CodexAuthParser.identity(from: authData)
+
+        let authFileURL = localAuthFileURL()
+        let homeURL = authFileURL.deletingLastPathComponent()
+
+        do {
+            try fileManager.createDirectory(at: homeURL, withIntermediateDirectories: true)
+        } catch {
+            throw CodexAppServerError.requestFailed(message: "Could not create local Codex home at `\(homeURL.path)`. \(error.localizedDescription)")
+        }
+
+        let backupURL = try backupExistingLocalAuthIfNeeded(at: authFileURL)
+        do {
+            try atomicallyWriteLocalAuth(authData, to: authFileURL)
+        } catch let appError as CodexAppServerError {
+            throw appError
+        } catch {
+            throw CodexAppServerError.localAuthWriteFailed(path: authFileURL.path, underlying: error.localizedDescription)
+        }
+
+        return LocalCodexSwitchResult(authFileURL: authFileURL, backupURL: backupURL)
     }
 
     private func upsertAccount(
@@ -433,6 +499,81 @@ final class CodexAccountService {
             return String(localPart)
         }
         return "Codex Account"
+    }
+
+    private func localAuthFileURL() -> URL {
+        localCodexHomeURL.appendingPathComponent("auth.json")
+    }
+
+    private func localIdentity(from authData: Data) throws -> CodexAccountIdentity {
+        do {
+            return try CodexAuthParser.identity(from: authData)
+        } catch {
+            throw CodexAppServerError.malformedLocalAuthData
+        }
+    }
+
+    private func backupExistingLocalAuthIfNeeded(at authFileURL: URL) throws -> URL? {
+        guard fileManager.fileExists(atPath: authFileURL.path) else {
+            return nil
+        }
+
+        let existingData: Data
+        do {
+            existingData = try Data(contentsOf: authFileURL)
+        } catch {
+            throw CodexAppServerError.requestFailed(message: "Could not read existing local auth from `\(authFileURL.path)`. \(error.localizedDescription)")
+        }
+
+        _ = try localIdentity(from: existingData)
+
+        let backupDirectoryURL = localCodexHomeURL.appendingPathComponent("quotabar-backups", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: backupDirectoryURL, withIntermediateDirectories: true)
+        } catch {
+            throw CodexAppServerError.localAuthBackupFailed(path: backupDirectoryURL.path, underlying: error.localizedDescription)
+        }
+
+        let backupURL = backupDirectoryURL.appendingPathComponent("auth-\(Self.backupTimestampString(from: .now)).json")
+        do {
+            try existingData.write(to: backupURL, options: .withoutOverwriting)
+        } catch {
+            throw CodexAppServerError.localAuthBackupFailed(path: backupURL.path, underlying: error.localizedDescription)
+        }
+        return backupURL
+    }
+
+    private func atomicallyWriteLocalAuth(_ authData: Data, to authFileURL: URL) throws {
+        let tempURL = authFileURL.deletingLastPathComponent()
+            .appendingPathComponent(".auth.\(UUID().uuidString).tmp")
+
+        do {
+            try authData.write(to: tempURL, options: .withoutOverwriting)
+            if fileManager.fileExists(atPath: authFileURL.path) {
+                _ = try fileManager.replaceItemAt(authFileURL, withItemAt: tempURL)
+            } else {
+                try fileManager.moveItem(at: tempURL, to: authFileURL)
+            }
+        } catch {
+            try? fileManager.removeItem(at: tempURL)
+            throw CodexAppServerError.localAuthWriteFailed(path: authFileURL.path, underlying: error.localizedDescription)
+        }
+    }
+
+    private static func resolveDefaultCodexHomeURL(fileManager: FileManager) -> URL {
+        if let entry = getpwuid(getuid()), let homeDirectory = entry.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: homeDirectory), isDirectory: true)
+                .appendingPathComponent(".codex", isDirectory: true)
+        }
+        return fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+    }
+
+    private static func backupTimestampString(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: date)
     }
 }
 
