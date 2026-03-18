@@ -81,7 +81,10 @@ final class CodexSessionBackupService {
 
         let sessionIndexEntries = try loadSessionIndexEntriesByID()
         let threads = try database.fetchThreads()
-            .filter { !$0.isArchivedForDisplay }
+            .filter { thread in
+                guard !thread.isArchivedForDisplay else { return false }
+                return fileManager.fileExists(atPath: normalizedWorkspacePath(thread.cwd))
+            }
             .compactMap { thread -> (ThreadRecord, String)? in
                 guard let displayTitle = preferredIndexedDisplayTitle(for: thread, sessionIndexEntry: sessionIndexEntries[thread.id]) else {
                     return nil
@@ -127,6 +130,9 @@ final class CodexSessionBackupService {
         let stateDatabaseURL = codexHomeURL.appendingPathComponent("state_5.sqlite")
         let database = try SQLiteDatabase(url: stateDatabaseURL)
         defer { database.close() }
+        let logsDatabaseURL = codexHomeURL.appendingPathComponent("logs_1.sqlite")
+        let logsDatabase = fileManager.fileExists(atPath: logsDatabaseURL.path) ? try SQLiteLogsDatabase(url: logsDatabaseURL) : nil
+        defer { logsDatabase?.close() }
         let sessionIndexEntries = try loadSessionIndexEntriesByID()
 
         let exportParentURL = fileManager.temporaryDirectory
@@ -143,6 +149,7 @@ final class CodexSessionBackupService {
                 ?? preferredDisplayTitle(for: thread, sessionIndexEntry: sessionIndexEntries[thread.id])
                 ?? thread.title
             let dynamicTools = try database.fetchDynamicTools(threadID: threadID)
+            let logs = try logsDatabase?.fetchLogs(threadID: threadID) ?? []
             let rolloutSourceURL = URL(fileURLWithPath: thread.rolloutPath)
             guard fileManager.fileExists(atPath: rolloutSourceURL.path) else {
                 throw CodexAppServerError.requestFailed(message: "The selected session points to a missing rollout file: `\(rolloutSourceURL.path)`.")
@@ -173,6 +180,9 @@ final class CodexSessionBackupService {
             try writeJSON(threadManifest, to: threadDirectoryURL.appendingPathComponent("manifest.json"))
             try writeJSON(thread, to: threadDirectoryURL.appendingPathComponent("thread.json"))
             try writeJSON(dynamicTools, to: threadDirectoryURL.appendingPathComponent("dynamic_tools.json"))
+            if !logs.isEmpty {
+                try writeJSON(logs, to: threadDirectoryURL.appendingPathComponent("logs.json"))
+            }
             if let sessionIndexEntry = try loadSessionIndexEntry(threadID: thread.id) {
                 try writeJSON(sessionIndexEntry, to: threadDirectoryURL.appendingPathComponent("session_index_entry.json"))
             }
@@ -282,6 +292,9 @@ final class CodexSessionBackupService {
         }
         let database = try SQLiteDatabase(url: stateDatabaseURL)
         defer { database.close() }
+        let logsDatabaseURL = codexHomeURL.appendingPathComponent("logs_1.sqlite")
+        let logsDatabase = try SQLiteLogsDatabase(url: logsDatabaseURL)
+        defer { logsDatabase.close() }
 
         for item in manifest.threads {
             let threadDirectoryURL = preview.extractedRootURL.appendingPathComponent(item.packageRelativeDirectory, isDirectory: true)
@@ -290,6 +303,10 @@ final class CodexSessionBackupService {
             let sessionIndexEntryURL = threadDirectoryURL.appendingPathComponent("session_index_entry.json")
             let sessionIndexEntry: SessionIndexEntry? = fileManager.fileExists(atPath: sessionIndexEntryURL.path)
                 ? try readJSON(from: sessionIndexEntryURL)
+                : nil
+            let logsURL = threadDirectoryURL.appendingPathComponent("logs.json")
+            let logs: [LogRecord]? = fileManager.fileExists(atPath: logsURL.path)
+                ? try readJSON(from: logsURL)
                 : nil
 
             let rolloutSourceURL = threadDirectoryURL.appendingPathComponent("rollout.jsonl")
@@ -302,23 +319,34 @@ final class CodexSessionBackupService {
             if fileManager.fileExists(atPath: rolloutTargetURL.path) {
                 try fileManager.removeItem(at: rolloutTargetURL)
             }
-            try fileManager.copyItem(at: rolloutSourceURL, to: rolloutTargetURL)
-
-            thread.rolloutPath = rolloutTargetURL.path
-            thread.cwd = resolveImportedCWD(
+            let importedCWD = resolveImportedCWD(
                 originalCWD: item.sourceCwd,
                 override: workspaceOverrides[item.sourceCwd]
             )
+            try rewriteImportedRollout(
+                from: rolloutSourceURL,
+                to: rolloutTargetURL,
+                originalCWD: item.sourceCwd,
+                importedCWD: importedCWD
+            )
+
+            thread.rolloutPath = rolloutTargetURL.path
+            thread.cwd = importedCWD
 
             try database.upsert(thread: thread)
             try database.replaceDynamicTools(threadID: thread.id, tools: dynamicTools)
+            if let logs, !logs.isEmpty {
+                try logsDatabase.replaceLogs(threadID: thread.id, logs: logs)
+            } else {
+                try logsDatabase.insertSyntheticImportLog(threadID: thread.id, timestamp: thread.updatedAt)
+            }
 
             let finalSessionIndexEntry = sessionIndexEntry ?? SessionIndexEntry(
                 id: thread.id,
                 threadName: thread.title,
                 updatedAt: Self.sessionIndexDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(thread.updatedAt)))
             )
-            try updateSessionIndex(with: finalSessionIndexEntry, titleOverride: thread.title)
+            try updateSessionIndex(with: finalSessionIndexEntry)
         }
 
         let fileSize = try archiveFileSize(at: preview.archiveURL)
@@ -378,10 +406,7 @@ final class CodexSessionBackupService {
         let url = codexHomeURL.appendingPathComponent("session_index.jsonl")
         guard fileManager.fileExists(atPath: url.path) else { return [:] }
         var entries: [String: SessionIndexEntry] = [:]
-        for line in try String(contentsOf: url, encoding: .utf8).split(separator: "\n") {
-            guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
-            let data = Data(line.utf8)
-            let entry = try JSONDecoder().decode(SessionIndexEntry.self, from: data)
+        for entry in try parseSessionIndexEntries(from: url) {
             entries[entry.id] = entry
         }
         return entries
@@ -438,30 +463,54 @@ final class CodexSessionBackupService {
         return true
     }
 
-    private func updateSessionIndex(with entry: SessionIndexEntry, titleOverride: String) throws {
+    private func updateSessionIndex(with entry: SessionIndexEntry) throws {
         let url = codexHomeURL.appendingPathComponent("session_index.jsonl")
-        var entries: [SessionIndexEntry] = []
-        if fileManager.fileExists(atPath: url.path) {
-            let contents = try String(contentsOf: url, encoding: .utf8)
-            for line in contents.split(separator: "\n") {
-                guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
-                let decoded = try JSONDecoder().decode(SessionIndexEntry.self, from: Data(line.utf8))
-                if decoded.id != entry.id {
-                    entries.append(decoded)
-                }
-            }
-        }
+        var entries = try fileManager.fileExists(atPath: url.path) ? parseSessionIndexEntries(from: url) : []
+        entries.removeAll { $0.id == entry.id }
 
-        entries.append(SessionIndexEntry(id: entry.id, threadName: titleOverride, updatedAt: entry.updatedAt))
+        entries.append(entry)
         entries.sort { $0.updatedAt < $1.updatedAt }
         let encodedLines = try entries.map { value in
-            let data = try JSONEncoder.sessionBundleEncoder.encode(value)
+            let data = try JSONEncoder.sessionIndexEncoder.encode(value)
             guard let string = String(data: data, encoding: .utf8) else {
                 throw CodexAppServerError.requestFailed(message: "Could not encode session index entry.")
             }
             return string
         }
         try encodedLines.joined(separator: "\n").appending("\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func parseSessionIndexEntries(from url: URL) throws -> [SessionIndexEntry] {
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        var entries: [SessionIndexEntry] = []
+        var buffer = ""
+
+        for rawLine in contents.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            if buffer.isEmpty && line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                continue
+            }
+
+            if !buffer.isEmpty {
+                buffer.append("\n")
+            }
+            buffer.append(line)
+
+            guard let data = buffer.data(using: .utf8) else {
+                throw CodexAppServerError.requestFailed(message: "Could not read session index data as UTF-8.")
+            }
+
+            if let entry = try? JSONDecoder().decode(SessionIndexEntry.self, from: data) {
+                entries.append(entry)
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+
+        if !buffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw CodexAppServerError.requestFailed(message: "The Codex session index file is malformed and could not be parsed.")
+        }
+
+        return entries
     }
 
     private func resolveImportedCWD(originalCWD: String, override: URL?) -> String {
@@ -472,6 +521,68 @@ final class CodexSessionBackupService {
             return URL(fileURLWithPath: originalCWD).standardizedFileURL.path
         }
         return originalCWD
+    }
+
+    private func rewriteImportedRollout(
+        from sourceURL: URL,
+        to destinationURL: URL,
+        originalCWD: String,
+        importedCWD: String
+    ) throws {
+        let originalPath = URL(fileURLWithPath: originalCWD).standardizedFileURL.path
+        let importedPath = URL(fileURLWithPath: importedCWD).standardizedFileURL.path
+        guard originalPath != importedPath else {
+            try fileManager.copyItem(at: sourceURL, to: destinationURL)
+            return
+        }
+
+        let contents = try String(contentsOf: sourceURL, encoding: .utf8)
+        let rewrittenLines = try contents.split(separator: "\n", omittingEmptySubsequences: false).map { rawLine -> String in
+            let line = String(rawLine)
+            guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return line }
+            guard var object = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
+                return line
+            }
+            rewriteCWDReferences(in: &object, originalCWD: originalPath, importedCWD: importedPath)
+            let data = try JSONSerialization.data(withJSONObject: object, options: [])
+            guard let rewritten = String(data: data, encoding: .utf8) else {
+                throw CodexAppServerError.requestFailed(message: "Could not rewrite imported rollout as UTF-8.")
+            }
+            return rewritten
+        }
+        try rewrittenLines.joined(separator: "\n").write(to: destinationURL, atomically: true, encoding: .utf8)
+    }
+
+    private func rewriteCWDReferences(in object: inout [String: Any], originalCWD: String, importedCWD: String) {
+        if let payload = object["payload"] as? [String: Any] {
+            var rewrittenPayload = payload
+            rewriteNestedCWDReferences(in: &rewrittenPayload, originalCWD: originalCWD, importedCWD: importedCWD)
+            object["payload"] = rewrittenPayload
+        }
+        rewriteNestedCWDReferences(in: &object, originalCWD: originalCWD, importedCWD: importedCWD)
+    }
+
+    private func rewriteNestedCWDReferences(in dictionary: inout [String: Any], originalCWD: String, importedCWD: String) {
+        for key in dictionary.keys {
+            switch dictionary[key] {
+            case let value as String:
+                if key == "cwd", value == originalCWD {
+                    dictionary[key] = importedCWD
+                } else if key == "text", value.contains("<cwd>\(originalCWD)</cwd>") {
+                    dictionary[key] = value.replacingOccurrences(of: "<cwd>\(originalCWD)</cwd>", with: "<cwd>\(importedCWD)</cwd>")
+                }
+            case var value as [String: Any]:
+                rewriteNestedCWDReferences(in: &value, originalCWD: originalCWD, importedCWD: importedCWD)
+                dictionary[key] = value
+            case var value as [[String: Any]]:
+                for index in value.indices {
+                    rewriteNestedCWDReferences(in: &value[index], originalCWD: originalCWD, importedCWD: importedCWD)
+                }
+                dictionary[key] = value
+            default:
+                continue
+            }
+        }
     }
 
     private func bundleDirectorySize(at url: URL) throws -> Int {
@@ -610,6 +721,12 @@ private extension JSONEncoder {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return encoder
     }()
+
+    static let sessionIndexEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return encoder
+    }()
 }
 
 private struct BackupArchiveManifest: Codable {
@@ -721,6 +838,34 @@ private struct DynamicToolRecord: Codable {
     }
 }
 
+private struct LogRecord: Codable {
+    let ts: Int64
+    let tsNanos: Int64
+    let level: String
+    let target: String
+    let message: String?
+    let modulePath: String?
+    let file: String?
+    let line: Int64?
+    let threadID: String?
+    let processUUID: String?
+    let estimatedBytes: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case ts
+        case tsNanos = "ts_nanos"
+        case level
+        case target
+        case message
+        case modulePath = "module_path"
+        case file
+        case line
+        case threadID = "thread_id"
+        case processUUID = "process_uuid"
+        case estimatedBytes = "estimated_bytes"
+    }
+}
+
 private struct SessionIndexEntry: Codable {
     let id: String
     let threadName: String
@@ -730,6 +875,163 @@ private struct SessionIndexEntry: Codable {
         case id
         case threadName = "thread_name"
         case updatedAt = "updated_at"
+    }
+}
+
+private final class SQLiteLogsDatabase {
+    private var handle: OpaquePointer?
+
+    init(url: URL) throws {
+        var db: OpaquePointer?
+        if sqlite3_open(url.path, &db) != SQLITE_OK {
+            defer { if db != nil { sqlite3_close(db) } }
+            throw CodexAppServerError.requestFailed(message: "Could not open SQLite database at `\(url.path)`.")
+        }
+        handle = db
+    }
+
+    func close() {
+        if let handle {
+            sqlite3_close(handle)
+            self.handle = nil
+        }
+    }
+
+    func fetchLogs(threadID: String) throws -> [LogRecord] {
+        let sql = """
+        SELECT ts, ts_nanos, level, target, message, module_path, file, line, thread_id, process_uuid, estimated_bytes
+        FROM logs
+        WHERE thread_id = ?
+        ORDER BY ts ASC, ts_nanos ASC, id ASC
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw currentError(message: "Could not prepare logs lookup.")
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, threadID, -1, SQLITE_TRANSIENT)
+
+        var logs: [LogRecord] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            logs.append(
+                LogRecord(
+                    ts: sqlite3_column_int64(statement, 0),
+                    tsNanos: sqlite3_column_int64(statement, 1),
+                    level: string(statement, 2),
+                    target: string(statement, 3),
+                    message: optionalString(statement, 4),
+                    modulePath: optionalString(statement, 5),
+                    file: optionalString(statement, 6),
+                    line: optionalInt64(statement, 7),
+                    threadID: optionalString(statement, 8),
+                    processUUID: optionalString(statement, 9),
+                    estimatedBytes: sqlite3_column_int64(statement, 10)
+                )
+            )
+        }
+        return logs
+    }
+
+    func replaceLogs(threadID: String, logs: [LogRecord]) throws {
+        try execute(sql: "DELETE FROM logs WHERE thread_id = ?", bind: { statement in
+            self.bind(text: threadID, to: statement, index: 1)
+        }, failureMessage: "Could not clear thread logs before import.")
+
+        let sql = """
+        INSERT INTO logs (
+            ts, ts_nanos, level, target, message, module_path, file, line, thread_id, process_uuid, estimated_bytes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        for log in logs {
+            try execute(sql: sql, bind: { statement in
+                sqlite3_bind_int64(statement, 1, log.ts)
+                sqlite3_bind_int64(statement, 2, log.tsNanos)
+                self.bind(text: log.level, to: statement, index: 3)
+                self.bind(text: log.target, to: statement, index: 4)
+                self.bind(optionalText: log.message, to: statement, index: 5)
+                self.bind(optionalText: log.modulePath, to: statement, index: 6)
+                self.bind(optionalText: log.file, to: statement, index: 7)
+                self.bind(optionalInt64: log.line, to: statement, index: 8)
+                self.bind(optionalText: log.threadID ?? threadID, to: statement, index: 9)
+                self.bind(optionalText: log.processUUID, to: statement, index: 10)
+                sqlite3_bind_int64(statement, 11, log.estimatedBytes)
+            }, failureMessage: "Could not write imported thread logs.")
+        }
+    }
+
+    func insertSyntheticImportLog(threadID: String, timestamp: Int64) throws {
+        let message = "Imported by QuotaBar"
+        let processUUID = "quotabar-import:\(UUID().uuidString)"
+        let sql = """
+        INSERT INTO logs (
+            ts, ts_nanos, level, target, message, module_path, file, line, thread_id, process_uuid, estimated_bytes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        try execute(sql: sql, bind: { statement in
+            sqlite3_bind_int64(statement, 1, timestamp)
+            sqlite3_bind_int64(statement, 2, 0)
+            self.bind(text: "INFO", to: statement, index: 3)
+            self.bind(text: "quotabar.import", to: statement, index: 4)
+            self.bind(optionalText: message, to: statement, index: 5)
+            self.bind(optionalText: nil, to: statement, index: 6)
+            self.bind(optionalText: nil, to: statement, index: 7)
+            self.bind(optionalInt64: nil, to: statement, index: 8)
+            self.bind(optionalText: threadID, to: statement, index: 9)
+            self.bind(optionalText: processUUID, to: statement, index: 10)
+            sqlite3_bind_int64(statement, 11, Int64(message.utf8.count))
+        }, failureMessage: "Could not write synthetic import log entry.")
+    }
+
+    private func execute(sql: String, bind: (OpaquePointer?) throws -> Void, failureMessage: String) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw currentError(message: failureMessage)
+        }
+        defer { sqlite3_finalize(statement) }
+        try bind(statement)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw currentError(message: failureMessage)
+        }
+    }
+
+    private func bind(text: String, to statement: OpaquePointer?, index: Int32) {
+        sqlite3_bind_text(statement, index, text, -1, SQLITE_TRANSIENT)
+    }
+
+    private func bind(optionalText: String?, to statement: OpaquePointer?, index: Int32) {
+        guard let optionalText else {
+            sqlite3_bind_null(statement, index)
+            return
+        }
+        bind(text: optionalText, to: statement, index: index)
+    }
+
+    private func bind(optionalInt64: Int64?, to statement: OpaquePointer?, index: Int32) {
+        guard let optionalInt64 else {
+            sqlite3_bind_null(statement, index)
+            return
+        }
+        sqlite3_bind_int64(statement, index, optionalInt64)
+    }
+
+    private func string(_ statement: OpaquePointer?, _ index: Int32) -> String {
+        guard let value = sqlite3_column_text(statement, index) else { return "" }
+        return String(cString: value)
+    }
+
+    private func optionalString(_ statement: OpaquePointer?, _ index: Int32) -> String? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else { return nil }
+        return string(statement, index)
+    }
+
+    private func optionalInt64(_ statement: OpaquePointer?, _ index: Int32) -> Int64? {
+        guard sqlite3_column_type(statement, index) != SQLITE_NULL else { return nil }
+        return sqlite3_column_int64(statement, index)
+    }
+
+    private func currentError(message: String) -> CodexAppServerError {
+        let details = handle.flatMap { sqlite3_errmsg($0) }.map { String(cString: $0) } ?? "Unknown SQLite error."
+        return .requestFailed(message: "\(message) \(details)")
     }
 }
 

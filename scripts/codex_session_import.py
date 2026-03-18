@@ -62,6 +62,40 @@ def choose_cwd(original_cwd: str, override_cwd: str | None) -> str:
     return str(Path.cwd().resolve())
 
 
+def rewrite_rollout_cwd(source: Path, destination: Path, original_cwd: str, imported_cwd: str) -> None:
+    original = str(Path(original_cwd).expanduser().resolve(strict=False))
+    imported = str(Path(imported_cwd).expanduser().resolve(strict=False))
+    if original == imported:
+        shutil.copy2(source, destination)
+        return
+
+    rewritten_lines: list[str] = []
+    for raw_line in source.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip():
+            rewritten_lines.append(raw_line)
+            continue
+        payload = json.loads(raw_line)
+        rewrite_cwd_refs(payload, original, imported)
+        rewritten_lines.append(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+
+    destination.write_text("\n".join(rewritten_lines) + "\n", encoding="utf-8")
+
+
+def rewrite_cwd_refs(value, original_cwd: str, imported_cwd: str) -> None:
+    if isinstance(value, dict):
+        for key, child in list(value.items()):
+            if isinstance(child, str):
+                if key == "cwd" and child == original_cwd:
+                    value[key] = imported_cwd
+                elif key == "text" and f"<cwd>{original_cwd}</cwd>" in child:
+                    value[key] = child.replace(f"<cwd>{original_cwd}</cwd>", f"<cwd>{imported_cwd}</cwd>")
+            else:
+                rewrite_cwd_refs(child, original_cwd, imported_cwd)
+    elif isinstance(value, list):
+        for item in value:
+            rewrite_cwd_refs(item, original_cwd, imported_cwd)
+
+
 def upsert_session_index(session_index_path: Path, entry: dict) -> None:
     existing = []
     if session_index_path.exists():
@@ -101,10 +135,11 @@ def main() -> int:
     rollout_relative_path = Path(manifest["rollout_relative_path"])
     rollout_target = codex_home / rollout_relative_path
     ensure_parent(rollout_target)
-    shutil.copy2(rollout_source, rollout_target)
+    imported_cwd = choose_cwd(thread["cwd"], args.cwd)
+    rewrite_rollout_cwd(rollout_source, rollout_target, thread["cwd"], imported_cwd)
 
     thread["rollout_path"] = str(rollout_target)
-    thread["cwd"] = choose_cwd(thread["cwd"], args.cwd)
+    thread["cwd"] = imported_cwd
     if args.title:
         thread["title"] = args.title
 

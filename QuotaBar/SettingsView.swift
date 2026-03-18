@@ -92,6 +92,12 @@ struct SettingsView: View {
                 BackupImportSheet(viewModel: viewModel, preview: preview)
             }
         }
+        .onChange(of: selectedTab) { _, newTab in
+            guard newTab == .backup else { return }
+            isPresentingExportSheet = false
+            isPresentingImportSheet = false
+            viewModel.resetBackupTabState()
+        }
     }
 
     private var statsPanel: some View {

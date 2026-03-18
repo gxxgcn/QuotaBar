@@ -133,6 +133,17 @@ final class ProviderMonitorViewModel: ObservableObject {
         backupErrorMessage = nil
     }
 
+    func resetBackupTabState() {
+        backupStatusMessage = nil
+        backupErrorMessage = nil
+        exportableWorkspaces = []
+        selectedExportThreadIDs = []
+        selectedImportArchiveURL = nil
+        importWorkspaceOverrides = [:]
+        sessionBackupService.cleanupImportPreview(importPreview)
+        importPreview = nil
+    }
+
     func prepareExportSelection() {
         do {
             exportableWorkspaces = try sessionBackupService.listExportableWorkspaces()
