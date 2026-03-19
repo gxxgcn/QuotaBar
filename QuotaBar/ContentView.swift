@@ -31,6 +31,7 @@ struct ContentView: View {
                             )
                         }
                     }
+                    .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollIndicators(.hidden)
@@ -124,6 +125,8 @@ private struct AccountCardView: View {
     let isSwitchingToLocal: Bool
     let onSwitchToLocal: () -> Void
     
+    @State private var isHovered = false
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 4) {
@@ -157,44 +160,42 @@ private struct AccountCardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
                 PlanTag(text: account.planType.capitalized)
-                if isLocalAccount {
-                    LocalTag()
-                }
                 Spacer()
-                Button {
-                    onSwitchToLocal()
-                } label: {
-                    if isSwitchingToLocal {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text(isLocalAccount ? "Using" : "Use")
-                            .font(.subheadline)
-                    }
+                if isSwitchingToLocal {
+                    ProgressView()
+                        .controlSize(.small)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(isLocalAccount || isSwitchingToLocal)
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(0.055),
-                    Color.white.opacity(0.02),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: .rect(cornerRadius: 16)
-        )
+        .contentShape(RoundedRectangle(cornerRadius: 16))
+        .background {
+            ZStack {
+                if isLocalAccount {
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(.ultraThinMaterial)
+                }
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(cardBackground)
+            }
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(Color.white.opacity(0.075))
+                .strokeBorder(borderStyle)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .shadow(color: glowColor.opacity(isHovered ? 0.12 : 0.0), radius: isHovered ? 6 : 0, x: 0, y: 0)
+        .shadow(color: glowColor.opacity(isHovered ? 0.06 : 0.0), radius: isHovered ? 10 : 0, x: 0, y: 0)
+        .animation(.easeOut(duration: 0.18), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .onTapGesture {
+            guard !isLocalAccount && !isSwitchingToLocal else { return }
+            onSwitchToLocal()
         }
     }
     
@@ -284,6 +285,58 @@ private struct AccountCardView: View {
             .lineLimit(1)
     }
     
+    private var cardBackground: LinearGradient {
+        if isLocalAccount {
+            return LinearGradient(
+                colors: [
+                    Color(red: 0.24, green: 0.30, blue: 0.38).opacity(0.7),
+                    Color(red: 0.18, green: 0.22, blue: 0.29).opacity(0.78),
+                    Color(red: 0.28, green: 0.36, blue: 0.46).opacity(0.64)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+        
+        return LinearGradient(
+            colors: [
+                Color.white.opacity(0.055),
+                Color.white.opacity(0.02),
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+    
+    private var borderStyle: some ShapeStyle {
+        if isLocalAccount {
+            return LinearGradient(
+                colors: [
+                    Color.white.opacity(0.16),
+                    Color(red: 0.54, green: 0.66, blue: 0.78).opacity(0.18)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+        
+        return LinearGradient(
+            colors: [
+                Color.white.opacity(isHovered ? 0.18 : 0.075),
+                Color.white.opacity(isHovered ? 0.08 : 0.04)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+    
+    private var glowColor: Color {
+        if isLocalAccount {
+            return Color(red: 0.56, green: 0.68, blue: 0.8)
+        }
+        return Color.white.opacity(0.92)
+    }
+    
     private func remainingString(_ window: RateLimitWindowSnapshot?) -> String {
         guard let window else { return "N/A" }
         return "\(window.percentLeft)% left"
@@ -316,22 +369,6 @@ private struct AccountCardView: View {
     private func shortDayString(_ date: Date?) -> String {
         guard let date else { return "--- --" }
         return date.formatted(.dateTime.month(.abbreviated).day())
-    }
-}
-
-private struct LocalTag: View {
-    var body: some View {
-        Text("Local")
-            .font(.system(size: 8 ))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(Color.green.opacity(0.14), in: Capsule())
-            .overlay {
-                Capsule()
-                    .strokeBorder(Color.green.opacity(0.18))
-            }
-            .foregroundStyle(Color.green)
-            .lineLimit(1)
     }
 }
 
