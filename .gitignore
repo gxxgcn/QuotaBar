@@ -1,6 +1,7 @@
 # Xcode build outputs
 build/
 DerivedData/
+.deriveddata/
 *.build/
 dist/
 
