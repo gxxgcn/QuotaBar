@@ -14,6 +14,7 @@ final class ProviderAccountRecord {
     var lastSyncedAt: Date?
     var lastKnownStatus: String
     var sortOrder: Int
+    var subscriptionExpiresAt: Date?
 
     init(
         id: UUID = UUID(),
@@ -26,7 +27,8 @@ final class ProviderAccountRecord {
         createdAt: Date = .now,
         lastSyncedAt: Date? = nil,
         lastKnownStatus: String = AccountSyncStatus.idle.rawValue,
-        sortOrder: Int = 0
+        sortOrder: Int = 0,
+        subscriptionExpiresAt: Date? = nil
     ) {
         self.id = id
         self.providerKindRawValue = providerKind.rawValue
@@ -39,6 +41,7 @@ final class ProviderAccountRecord {
         self.lastSyncedAt = lastSyncedAt
         self.lastKnownStatus = lastKnownStatus
         self.sortOrder = sortOrder
+        self.subscriptionExpiresAt = subscriptionExpiresAt
     }
 
     var providerKind: ProviderKind {

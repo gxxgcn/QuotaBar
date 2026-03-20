@@ -32,6 +32,7 @@ struct CodexAccountIdentity: Sendable {
     let email: String
     let accountID: String
     let planType: String
+    let subscriptionExpiresAt: Date?
 }
 
 enum CodexAuthParser {
@@ -92,8 +93,22 @@ enum CodexAuthParser {
             ?? authClaims?["chatgpt_subscription_plan_type"] as? String
             ?? "unknown"
 
+        // Parse subscription expiration time
+        var subscriptionExpiresAt: Date? = nil
+        if let expiresString = authClaims?["chatgpt_subscription_active_until"] as? String {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            subscriptionExpiresAt = formatter.date(from: expiresString)
+
+            // Try without fractional seconds if first attempt fails
+            if subscriptionExpiresAt == nil {
+                formatter.formatOptions = [.withInternetDateTime]
+                subscriptionExpiresAt = formatter.date(from: expiresString)
+            }
+        }
+
         guard let email, let accountID else { return nil }
-        return CodexAccountIdentity(email: email, accountID: accountID, planType: planType)
+        return CodexAccountIdentity(email: email, accountID: accountID, planType: planType, subscriptionExpiresAt: subscriptionExpiresAt)
     }
 
     private static func decodeBase64URL(_ input: String) -> Data? {

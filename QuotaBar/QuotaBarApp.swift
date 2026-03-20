@@ -5,7 +5,7 @@ import SwiftData
 struct QuotaBarApp: App {
   private let sharedModelContainer: ModelContainer
   @StateObject private var viewModel: ProviderMonitorViewModel
-  
+
   init() {
     do {
       let schema = Schema([
@@ -20,7 +20,7 @@ struct QuotaBarApp: App {
         credentialStore: credentialStore
       )
       let viewModel = ProviderMonitorViewModel(service: service, sessionBackupService: sessionBackupService)
-      
+
       self.sharedModelContainer = modelContainer
       _viewModel = StateObject(wrappedValue: viewModel)
       Task {
@@ -30,10 +30,10 @@ struct QuotaBarApp: App {
       fatalError("Could not initialize QuotaBar: \(error)")
     }
   }
-  
+
   var body: some Scene {
     MenuBarExtra {
-      ContentView(viewModel: viewModel)
+      ContentView(dataSource: viewModel)
         .modelContainer(sharedModelContainer)
     } label: {
       if let nsImage = NSImage(named: "StatusBarIcon") {
@@ -46,7 +46,7 @@ struct QuotaBarApp: App {
       }
     }
     .menuBarExtraStyle(.window)
-    
+
     Window("QuotaBar Settings", id: "settings") {
       SettingsView(viewModel: viewModel)
         .modelContainer(sharedModelContainer)

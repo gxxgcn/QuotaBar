@@ -4,8 +4,11 @@ import Foundation
 import SwiftData
 
 @MainActor
-final class ProviderMonitorViewModel: ObservableObject {
+final class ProviderMonitorViewModel: ObservableObject, ContentViewDataSource {
     private static let backgroundRefreshInterval: Duration = .seconds(30 * 60)
+    #if DEBUG
+    private static let authShowcaseAccountID = UUID(uuidString: "F0D95444-1D6E-4A39-9A0B-2D6D5F0F0A11")!
+    #endif
 
     private let service: CodexAccountService
     private let sessionBackupService: CodexSessionBackupService
@@ -82,6 +85,12 @@ final class ProviderMonitorViewModel: ObservableObject {
         return "gauge.with.dots.needle.33percent"
     }
 
+    var latestRefreshDate: Date? {
+        let accountDates = accounts.compactMap(\.lastSyncedAt)
+        let snapshotDates = snapshotsByAccountID.values.map(\.fetchedAt)
+        return (accountDates + snapshotDates).max()
+    }
+
     func bootstrap() async {
         guard !backgroundRefreshStarted else { return }
         backgroundRefreshStarted = true
@@ -102,7 +111,9 @@ final class ProviderMonitorViewModel: ObservableObject {
 
     func reloadAccounts() {
         do {
-            accounts = try service.fetchAccounts()
+            let fetchedAccounts = try service.fetchAccounts()
+            accounts = presentingAccounts(from: fetchedAccounts)
+            synchronizeShowcaseSnapshot()
         } catch {
             addAccountErrorMessage = error.localizedDescription
         }
@@ -129,7 +140,7 @@ final class ProviderMonitorViewModel: ObservableObject {
         defer { isRefreshingAll = false }
 
         reloadAccounts()
-        let enabledAccounts = accounts.filter(\.isEnabled)
+        let enabledAccounts = accounts.filter(\.isEnabled).filter { !isDebugShowcaseAccount($0) }
 
         await withTaskGroup(of: CodexUsageSnapshot?.self) { group in
             for account in enabledAccounts {
@@ -319,6 +330,14 @@ final class ProviderMonitorViewModel: ObservableObject {
         loginContext = nil
     }
 
+    func prepareLoginGuide() {
+        resetLoginFlow(cancelProcess: true)
+    }
+
+    func cancelCodexLogin() {
+        resetLoginFlow(cancelProcess: true)
+    }
+
     func beginCodexLogin() async {
         guard !isStartingLogin else { return }
         if loginContext != nil {
@@ -365,6 +384,7 @@ final class ProviderMonitorViewModel: ObservableObject {
             let authData = try Data(contentsOf: url)
             _ = try await service.importAccount(from: authData)
             loginURLPollingTask?.cancel()
+            loginContext = nil
             reloadAccounts()
             await refreshAll(reason: "auth-import")
             loginHasStarted = false
@@ -431,6 +451,7 @@ final class ProviderMonitorViewModel: ObservableObject {
     }
 
     func switchLocalCodexAccount(to account: ProviderAccountRecord) async {
+        guard !isDebugShowcaseAccount(account) else { return }
         guard switchingLocalAccountID == nil else { return }
         switchingLocalAccountID = account.id
         localCodexErrorMessage = nil
@@ -495,6 +516,83 @@ final class ProviderMonitorViewModel: ObservableObject {
         nsAlert.addButton(withTitle: "OK")
         _ = nsAlert.runModal()
     }
+
+    private func presentingAccounts(from fetchedAccounts: [ProviderAccountRecord]) -> [ProviderAccountRecord] {
+        #if DEBUG
+        if fetchedAccounts.contains(where: { $0.syncStatus == .unauthorized }) {
+            return fetchedAccounts
+        }
+        return fetchedAccounts + [makeDebugAuthShowcaseAccount(sortOrder: fetchedAccounts.count)]
+        #else
+        return fetchedAccounts
+        #endif
+    }
+
+    private func synchronizeShowcaseSnapshot() {
+        #if DEBUG
+        if let showcaseAccount = accounts.first(where: isDebugShowcaseAccount) {
+            snapshotsByAccountID[showcaseAccount.id] = makeDebugAuthShowcaseSnapshot(for: showcaseAccount)
+        } else {
+            snapshotsByAccountID.removeValue(forKey: Self.authShowcaseAccountID)
+        }
+        #endif
+    }
+
+    private func isDebugShowcaseAccount(_ account: ProviderAccountRecord) -> Bool {
+        #if DEBUG
+        account.id == Self.authShowcaseAccountID
+        #else
+        false
+        #endif
+    }
+
+    #if DEBUG
+    private func makeDebugAuthShowcaseAccount(sortOrder: Int) -> ProviderAccountRecord {
+        ProviderAccountRecord(
+            id: Self.authShowcaseAccountID,
+            providerKind: .codex,
+            displayName: "auth-required",
+            email: "auth-required@example.com",
+            remoteAccountID: "debug-auth-required",
+            planType: "plus",
+            isEnabled: true,
+            createdAt: .now,
+            lastSyncedAt: nil,
+            lastKnownStatus: AccountSyncStatus.unauthorized.rawValue,
+            sortOrder: sortOrder,
+            subscriptionExpiresAt: nil
+        )
+    }
+
+    private func makeDebugAuthShowcaseSnapshot(for account: ProviderAccountRecord) -> CodexUsageSnapshot {
+        CodexUsageSnapshot(
+            accountID: account.id,
+            email: account.email,
+            planType: account.planType,
+            rateLimitsByLimitID: [
+                "codex": RateLimitSnapshotData(
+                    limitID: "codex",
+                    limitName: "Codex",
+                    planType: account.planType,
+                    primary: RateLimitWindowSnapshot(
+                        usedPercent: 72,
+                        resetsAt: .now.addingTimeInterval(4_200),
+                        windowDurationMins: 300
+                    ),
+                    secondary: RateLimitWindowSnapshot(
+                        usedPercent: 41,
+                        resetsAt: .now.addingTimeInterval(172_800),
+                        windowDurationMins: 10_080
+                    )
+                )
+            ],
+            primaryLimit: nil,
+            secondaryLimit: nil,
+            lastError: "Authentication required. Use Quick Login to reconnect this account.",
+            fetchedAt: .now
+        )
+    }
+    #endif
 
 }
 

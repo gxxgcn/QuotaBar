@@ -26,6 +26,7 @@ struct SettingsView: View {
     @State private var isPresentingLoginSheet = false
     @State private var isPresentingExportSheet = false
     @State private var isPresentingImportSheet = false
+    @State private var accountPendingDeletion: ProviderAccountRecord?
 
     var body: some View {
         NavigationStack {
@@ -70,7 +71,7 @@ struct SettingsView: View {
             }
             .navigationTitle("QuotaBar Settings")
         }
-        .frame(minWidth: 840, minHeight: 560)
+        .frame(minWidth: 840, minHeight: 600)
         .sheet(isPresented: $isPresentingLoginSheet) {
             LoginGuideSheet(viewModel: viewModel)
         }
@@ -97,6 +98,31 @@ struct SettingsView: View {
             isPresentingExportSheet = false
             isPresentingImportSheet = false
             viewModel.resetBackupTabState()
+        }
+        .confirmationDialog(
+            "Delete Account?",
+            isPresented: Binding(
+                get: { accountPendingDeletion != nil },
+                set: { newValue in
+                    if !newValue {
+                        accountPendingDeletion = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Account", role: .destructive) {
+                guard let accountPendingDeletion else { return }
+                Task { await viewModel.deleteAccount(accountPendingDeletion) }
+                self.accountPendingDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                accountPendingDeletion = nil
+            }
+        } message: {
+            if let accountPendingDeletion {
+                Text("This removes \(accountPendingDeletion.displayName) from QuotaBar and deletes its stored auth.")
+            }
         }
     }
 
@@ -160,7 +186,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 18) {
             sectionHeader(
                 title: "Account Management",
-                subtitle: "Use the login guide to add accounts, then review and manage them here."
+                subtitle: "Use the login guide to add accounts, then manage aliases or remove accounts here. Switching and refresh actions stay in the panel."
             )
 
             loginEntryPanel
@@ -178,21 +204,14 @@ struct SettingsView: View {
                 if viewModel.accounts.isEmpty {
                     emptyAccountsState
                 } else {
-                    LazyVGrid(columns: accountColumns, alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 10) {
                         ForEach(viewModel.accounts) { account in
-                            accountCard(account)
+                            accountRow(account)
                         }
                     }
                 }
             }
         }
-    }
-
-    private var accountColumns: [GridItem] {
-        [
-            GridItem(.flexible(minimum: 280), spacing: 16, alignment: .top),
-            GridItem(.flexible(minimum: 280), spacing: 16, alignment: .top),
-        ]
     }
 
     private var loginEntryPanel: some View {
@@ -207,6 +226,7 @@ struct SettingsView: View {
                 }
                 Spacer()
                 Button {
+                    viewModel.prepareLoginGuide()
                     isPresentingLoginSheet = true
                 } label: {
                     Label("Open Login Guide", systemImage: "person.crop.circle.badge.plus")
@@ -351,152 +371,49 @@ struct SettingsView: View {
             .textSelection(.enabled)
     }
 
-    private func accountCard(_ account: ProviderAccountRecord) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 14) {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField(
-                        "Display Name",
-                        text: Binding(
-                            get: { account.displayName },
-                            set: { viewModel.renameAccount(account, to: $0) }
-                        )
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1)
+    private func accountRow(_ account: ProviderAccountRecord) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            PlanTag(text: account.planType.capitalized)
+                .frame(width: 72, alignment: .leading)
 
-                    Text(account.email)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-
-                    if viewModel.isLocalCodexAccount(account) {
-                        SettingsLocalBadge()
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                VStack(alignment: .trailing, spacing: 10) {
-                    compactStatusBadge(for: account.syncStatus)
-
-                    HStack(spacing: 8) {
-                        Text("Enabled")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .fixedSize()
-
-                        Toggle(
-                            "",
-                            isOn: Binding(
-                                get: { account.isEnabled },
-                                set: { viewModel.setAccountEnabled(account, isEnabled: $0) }
-                            )
-                        )
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                    }
-                }
-                .fixedSize()
-            }
-
-            HStack(spacing: 10) {
-                detailPill(title: "Plan", value: account.planType.capitalized)
-                detailPill(title: "Synced", value: syncText(account.lastSyncedAt))
-                Spacer(minLength: 0)
-
-                Button {
-                    Task { await viewModel.switchLocalCodexAccount(to: account) }
-                } label: {
-                    if viewModel.isSwitchingLocalCodexAccount(account) {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text(viewModel.isLocalCodexAccount(account) ? "Using Locally" : "Switch To Local Codex")
-                    }
-                }
-                .buttonStyle(.bordered)
-                .disabled(viewModel.isLocalCodexAccount(account) || viewModel.isSwitchingLocalCodexAccount(account))
-
-                Button("Delete", role: .destructive) {
-                    Task { await viewModel.deleteAccount(account) }
-                }
-                .buttonStyle(.borderless)
+            Text(account.email)
+                .font(.subheadline.weight(.medium))
                 .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
+
+            TextField(
+                "Alias",
+                text: Binding(
+                    get: { account.displayName },
+                    set: { viewModel.renameAccount(account, to: $0) }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 180)
+
+            Button {
+                accountPendingDeletion = account
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .frame(width: 30, height: 30)
+                    .background(Color.red.opacity(0.12), in: Circle())
+                    .overlay {
+                        Circle()
+                            .strokeBorder(Color.red.opacity(0.2))
+                    }
             }
+            .buttonStyle(.plain)
+            .help("Delete account")
+            .accessibilityLabel("Delete account")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial, in: .rect(cornerRadius: 18))
-    }
-
-    private func detailPill(title: String, value: String) -> some View {
-        HStack(spacing: 8) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(value)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-                .minimumScaleFactor(0.9)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 12))
-        .fixedSize()
-    }
-
-    private func compactStatusBadge(for status: AccountSyncStatus) -> some View {
-        Text(statusText(for: status))
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(statusColor(for: status))
-            .lineLimit(1)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(statusColor(for: status).opacity(0.14), in: Capsule())
-            .fixedSize()
-    }
-
-    private func statusText(for status: AccountSyncStatus) -> String {
-        switch status {
-        case .healthy:
-            return "Healthy"
-        case .unauthorized:
-            return "Auth"
-        case .failed, .degraded:
-            return "Error"
-        case .disabled:
-            return "Disabled"
-        case .refreshing:
-            return "Refreshing"
-        case .idle:
-            return "Idle"
-        }
-    }
-
-    private func statusColor(for status: AccountSyncStatus) -> Color {
-        switch status {
-        case .healthy:
-            return .green
-        case .unauthorized:
-            return .orange
-        case .failed, .degraded:
-            return .red
-        case .disabled, .idle:
-            return .secondary
-        case .refreshing:
-            return .blue
-        }
-    }
-
-    private func syncText(_ date: Date?) -> String {
-        guard let date else { return "Never" }
-        return date.formatted(date: .omitted, time: .shortened)
     }
 
     private func selectDirectoryURL(message: String) -> URL? {
@@ -528,17 +445,6 @@ struct SettingsView: View {
         panel.prompt = "Choose"
         panel.message = "Choose a QuotaBar backup archive"
         return panel.runModal() == .OK ? panel.url : nil
-    }
-}
-
-private struct SettingsLocalBadge: View {
-    var body: some View {
-        Text("Local Codex")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.green)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(Color.green.opacity(0.12), in: Capsule())
     }
 }
 
