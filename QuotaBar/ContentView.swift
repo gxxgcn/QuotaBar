@@ -4,6 +4,7 @@ import SwiftUI
 
 struct ContentView<DataSource: ContentViewDataSource>: View {
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var dataSource: DataSource
     private let runsLifecycleTasks: Bool
     private let quickLoginLabel: String
@@ -182,7 +183,11 @@ struct ContentView<DataSource: ContentViewDataSource>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: .rect(cornerRadius: 16))
+        .background(panelBackground, in: .rect(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(panelBorder)
+        }
     }
     
     private enum QuickLoginButtonStyle {
@@ -277,7 +282,11 @@ struct ContentView<DataSource: ContentViewDataSource>: View {
             }
         }
         .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .background(panelBackground, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(panelBorder)
+        }
     }
     
     private func handleQuickLoginButtonTap() {
@@ -319,6 +328,27 @@ struct ContentView<DataSource: ContentViewDataSource>: View {
             self.presentedCardError = nextPresentation
         }
     }
+    
+    private var panelBackground: AnyShapeStyle {
+        if colorScheme == .dark {
+            return AnyShapeStyle(.thinMaterial)
+        }
+        
+        return AnyShapeStyle(
+            LinearGradient(
+                colors: [
+                    Color.white.opacity(0.96),
+                    Color(red: 0.95, green: 0.97, blue: 1.0).opacity(0.98),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+    }
+    
+    private var panelBorder: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.08)
+    }
 }
 
 private struct CardErrorPresentation: Identifiable, Equatable {
@@ -330,6 +360,7 @@ private struct CardErrorPresentation: Identifiable, Equatable {
 }
 
 private struct CardErrorSheet: View {
+    @Environment(\.colorScheme) private var colorScheme
     let error: CardErrorPresentation
     let onClose: () -> Void
     let onLogin: () -> Void
@@ -380,16 +411,42 @@ private struct CardErrorSheet: View {
         }
         .padding(18)
         .frame(width: 340)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22))
+        .background(sheetBackground, in: RoundedRectangle(cornerRadius: 22))
         .overlay {
             RoundedRectangle(cornerRadius: 22)
-                .strokeBorder(Color.white.opacity(0.14))
+                .strokeBorder(sheetBorderColor)
         }
-        .shadow(color: .black.opacity(0.22), radius: 28, x: 0, y: 18)
+        .shadow(color: shadowColor, radius: 28, x: 0, y: 18)
+    }
+    
+    private var sheetBackground: AnyShapeStyle {
+        if colorScheme == .dark {
+            return AnyShapeStyle(.ultraThinMaterial)
+        }
+        
+        return AnyShapeStyle(
+            LinearGradient(
+                colors: [
+                    Color.white.opacity(0.98),
+                    Color(red: 0.95, green: 0.96, blue: 0.99).opacity(0.98),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+    }
+    
+    private var sheetBorderColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.10)
+    }
+    
+    private var shadowColor: Color {
+        colorScheme == .dark ? .black.opacity(0.22) : .black.opacity(0.12)
     }
 }
 
 private struct AccountCardView: View {
+    @Environment(\.colorScheme) private var colorScheme
     enum SelectedStyle: String, CaseIterable, Identifiable {
         case pro
         case iridescent
@@ -536,15 +593,9 @@ private struct AccountCardView: View {
                 
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.white.opacity(0.035), Color.white.opacity(0.09)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
+                        .fill(trackBackground)
                     RoundedRectangle(cornerRadius: 4)
-                        .strokeBorder(Color.white.opacity(0.06))
+                        .strokeBorder(trackBorderColor)
                     RoundedRectangle(cornerRadius: 4)
                         .fill(
                             LinearGradient(
@@ -599,6 +650,18 @@ private struct AccountCardView: View {
         if isLocalAccount {
             switch selectedStyle {
             case .pro:
+                if colorScheme == .light {
+                    return LinearGradient(
+                        colors: [
+                            Color(red: 0.90, green: 0.96, blue: 1.0),
+                            Color(red: 0.72, green: 0.87, blue: 0.98),
+                            Color(red: 0.58, green: 0.79, blue: 0.95),
+                            Color(red: 0.82, green: 0.91, blue: 0.98),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: UnitPoint(x: 0.92, y: 1.0)
+                    )
+                }
                 return LinearGradient(
                     colors: [
                         Color(red: 0.12, green: 0.14, blue: 0.19).opacity(0.98),
@@ -610,6 +673,18 @@ private struct AccountCardView: View {
                     endPoint: UnitPoint(x: 0.92, y: 1.0)
                 )
             case .iridescent:
+                if colorScheme == .light {
+                    return LinearGradient(
+                        colors: [
+                            Color(red: 0.99, green: 0.93, blue: 0.97),
+                            Color(red: 0.94, green: 0.84, blue: 0.95),
+                            Color(red: 0.82, green: 0.90, blue: 0.99),
+                            Color(red: 0.90, green: 0.85, blue: 0.98),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: UnitPoint(x: 0.92, y: 1.0)
+                    )
+                }
                 return LinearGradient(
                     colors: [
                         Color(red: 0.09, green: 0.10, blue: 0.16).opacity(0.98),
@@ -623,6 +698,17 @@ private struct AccountCardView: View {
                     endPoint: UnitPoint(x: 0.92, y: 1.0)
                 )
             }
+        }
+        
+        if colorScheme == .light {
+            return LinearGradient(
+                colors: [
+                    Color.white.opacity(0.92),
+                    Color(red: 0.95, green: 0.96, blue: 0.98).opacity(0.96),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
         }
         
         return LinearGradient(
@@ -639,6 +725,17 @@ private struct AccountCardView: View {
         if isLocalAccount {
             switch selectedStyle {
             case .pro:
+                if colorScheme == .light {
+                    return LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.88),
+                            Color(red: 0.36, green: 0.63, blue: 0.96).opacity(0.32),
+                            Color(red: 0.56, green: 0.77, blue: 0.97).opacity(0.18),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                }
                 return LinearGradient(
                     colors: [
                         Color.white.opacity(0.18),
@@ -649,6 +746,17 @@ private struct AccountCardView: View {
                     endPoint: .bottomTrailing
                 )
             case .iridescent:
+                if colorScheme == .light {
+                    return LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.90),
+                            Color(red: 0.95, green: 0.54, blue: 0.66).opacity(0.28),
+                            Color(red: 0.42, green: 0.66, blue: 0.98).opacity(0.24),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                }
                 return LinearGradient(
                     colors: [
                         Color.white.opacity(0.18),
@@ -660,6 +768,17 @@ private struct AccountCardView: View {
                     endPoint: .bottomTrailing
                 )
             }
+        }
+        
+        if colorScheme == .light {
+            return LinearGradient(
+                colors: [
+                    Color.black.opacity(isHovered ? 0.12 : 0.07),
+                    Color.black.opacity(isHovered ? 0.05 : 0.03),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
         }
         
         return LinearGradient(
@@ -676,12 +795,16 @@ private struct AccountCardView: View {
         if isLocalAccount {
             switch selectedStyle {
             case .pro:
-                return Color(red: 0.42, green: 0.74, blue: 1.0)
+                return colorScheme == .dark
+                    ? Color(red: 0.42, green: 0.74, blue: 1.0)
+                    : Color(red: 0.34, green: 0.60, blue: 0.94)
             case .iridescent:
-                return Color(red: 0.74, green: 0.50, blue: 0.96)
+                return colorScheme == .dark
+                    ? Color(red: 0.74, green: 0.50, blue: 0.96)
+                    : Color(red: 0.84, green: 0.52, blue: 0.86)
             }
         }
-        return Color.white.opacity(0.92)
+        return colorScheme == .dark ? Color.white.opacity(0.92) : Color.black.opacity(0.28)
     }
     
     private var hasError: Bool {
@@ -733,9 +856,33 @@ private struct AccountCardView: View {
         
         return date.formatted(.dateTime.month(.abbreviated).day())
     }
+    
+    private var trackBackground: LinearGradient {
+        if colorScheme == .dark {
+            return LinearGradient(
+                colors: [Color.white.opacity(0.035), Color.white.opacity(0.09)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        
+        return LinearGradient(
+            colors: [
+                Color.black.opacity(0.03),
+                Color.black.opacity(0.06),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+    
+    private var trackBorderColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.06)
+    }
 }
 
 struct PlanTag: View {
+    @Environment(\.colorScheme) private var colorScheme
     let text: String
     
     var body: some View {
@@ -743,13 +890,27 @@ struct PlanTag: View {
             .font(.system(size: 8))
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
-            .background(Color.blue.opacity(0.12), in: Capsule())
+            .background(tagBackground, in: Capsule())
             .overlay {
                 Capsule()
-                    .strokeBorder(Color.blue.opacity(0.16))
+                    .strokeBorder(tagBorder)
             }
-            .foregroundStyle(Color(red: 0.42, green: 0.74, blue: 1.0))
+            .foregroundStyle(tagForeground)
             .lineLimit(1)
+    }
+    
+    private var tagBackground: Color {
+        colorScheme == .dark ? Color.blue.opacity(0.12) : Color.blue.opacity(0.10)
+    }
+    
+    private var tagBorder: Color {
+        colorScheme == .dark ? Color.blue.opacity(0.16) : Color.blue.opacity(0.22)
+    }
+    
+    private var tagForeground: Color {
+        colorScheme == .dark
+            ? Color(red: 0.42, green: 0.74, blue: 1.0)
+            : Color(red: 0.16, green: 0.44, blue: 0.84)
     }
 }
 
