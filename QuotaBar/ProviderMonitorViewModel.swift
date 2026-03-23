@@ -6,12 +6,16 @@ import SwiftData
 @MainActor
 final class ProviderMonitorViewModel: ObservableObject, ContentViewDataSource {
     private static let backgroundRefreshInterval: Duration = .seconds(30 * 60)
+    private enum DefaultsKey {
+        static let suppressRestartReminder = "localCodex.suppressRestartReminder"
+    }
     #if DEBUG
     private static let authShowcaseAccountID = UUID(uuidString: "F0D95444-1D6E-4A39-9A0B-2D6D5F0F0A11")!
     #endif
 
     private let service: CodexAccountService
     private let sessionBackupService: CodexSessionBackupService
+    private let userDefaults: UserDefaults
 
     @Published private(set) var accounts: [ProviderAccountRecord] = []
     @Published var snapshotsByAccountID: [UUID: CodexUsageSnapshot] = [:]
@@ -40,9 +44,14 @@ final class ProviderMonitorViewModel: ObservableObject, ContentViewDataSource {
     private var backgroundRefreshTask: Task<Void, Never>?
     private var loginURLPollingTask: Task<Void, Never>?
 
-    init(service: CodexAccountService, sessionBackupService: CodexSessionBackupService) {
+    init(
+        service: CodexAccountService,
+        sessionBackupService: CodexSessionBackupService,
+        userDefaults: UserDefaults = .standard
+    ) {
         self.service = service
         self.sessionBackupService = sessionBackupService
+        self.userDefaults = userDefaults
         self.sessionExportDirectoryURL = sessionBackupService.exportDirectoryURL
         reloadAccounts()
     }
@@ -481,7 +490,9 @@ final class ProviderMonitorViewModel: ObservableObject, ContentViewDataSource {
     ) -> LocalCodexAlert {
         return LocalCodexAlert(
             title: "Account Updated",
-            message: "Now using \(account.displayName). Restart Codex if it is open."
+            message: "Now using \(account.displayName). Restart Codex if it is open.",
+            suppressionPreferenceKey: DefaultsKey.suppressRestartReminder,
+            suppressionButtonTitle: "Don't remind me again"
         )
     }
 
@@ -507,14 +518,29 @@ final class ProviderMonitorViewModel: ObservableObject, ContentViewDataSource {
     }
 
     private func presentSystemAlert(_ alert: LocalCodexAlert) async {
+        if let preferenceKey = alert.suppressionPreferenceKey,
+           userDefaults.bool(forKey: preferenceKey) {
+            return
+        }
+
         NSApp.activate(ignoringOtherApps: true)
 
         let nsAlert = NSAlert()
         nsAlert.alertStyle = .informational
         nsAlert.messageText = alert.title
         nsAlert.informativeText = alert.message
+        if let preferenceKey = alert.suppressionPreferenceKey {
+            nsAlert.showsSuppressionButton = true
+            nsAlert.suppressionButton?.title = alert.suppressionButtonTitle ?? "Don't show this again"
+            nsAlert.suppressionButton?.state = userDefaults.bool(forKey: preferenceKey) ? .on : .off
+        }
         nsAlert.addButton(withTitle: "OK")
         _ = nsAlert.runModal()
+
+        if let preferenceKey = alert.suppressionPreferenceKey {
+            let shouldSuppress = nsAlert.suppressionButton?.state == .on
+            userDefaults.set(shouldSuppress, forKey: preferenceKey)
+        }
     }
 
     private func presentingAccounts(from fetchedAccounts: [ProviderAccountRecord]) -> [ProviderAccountRecord] {
@@ -600,6 +626,20 @@ struct LocalCodexAlert: Identifiable {
     let id = UUID()
     let title: String
     let message: String
+    let suppressionPreferenceKey: String?
+    let suppressionButtonTitle: String?
+
+    init(
+        title: String,
+        message: String,
+        suppressionPreferenceKey: String? = nil,
+        suppressionButtonTitle: String? = nil
+    ) {
+        self.title = title
+        self.message = message
+        self.suppressionPreferenceKey = suppressionPreferenceKey
+        self.suppressionButtonTitle = suppressionButtonTitle
+    }
 }
 
 struct ProviderSummary {
