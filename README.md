@@ -14,11 +14,15 @@ It is a good fit if you want:
 
 ### Menu Bar Panel
 
-<img src="./menu-panel.jpeg" alt="CodexBar menu screenshot" width="480" />
+<img src="./menu-panel.png" alt="CodexBar menu screenshot" width="480" />
 
-### Settings
+### Accounts
 
-<img src="./settings.jpeg" alt="QuotaBar settings screenshot" width="480" />
+<img src="./accounts.png" alt="QuotaBar accounts screenshot" width="480" />
+
+### Backup
+
+<img src="./backup.png" alt="QuotaBar backup screenshot" width="480" />
 
 ## What It Does
 
@@ -45,15 +49,15 @@ The monitoring panel shows:
 
 ## How It Works
 
-QuotaBar keeps account auth isolated from the default `~/.codex`, but the backup tools can read your real Codex session data when you explicitly use the backup flow.
+QuotaBar keeps account auth isolated from the default `~/.codex` , but the backup tools can read your real Codex session data when you explicitly use the backup flow.
 
 Each account is handled like this:
 
-1. Login runs in an app-managed isolated `CODEX_HOME`
-2. The resulting `auth.json` is stored in Keychain
-3. Non-sensitive account metadata is stored in SwiftData
-4. Refresh extracts a bearer token from the stored auth blob
-5. Usage is fetched from:
+01. Login runs in an app-managed isolated `CODEX_HOME`
+02. The resulting `auth.json` is stored in Keychain
+03. Non-sensitive account metadata is stored in SwiftData
+04. Refresh extracts a bearer token from the stored auth blob
+05. Usage is fetched from:
 
 ```text
 https://chatgpt.com/backend-api/wham/usage
@@ -68,10 +72,10 @@ QuotaBar maps that response into:
 
 The backup flow is separate from account monitoring:
 
-1. You choose one or more visible Codex threads to export
-2. QuotaBar reads the matching thread metadata and rollout files from your real `~/.codex`
-3. It writes a compressed backup archive
-4. On another machine, you choose that archive and remap each project to a local workspace before import
+01. You choose one or more visible Codex threads to export
+02. QuotaBar reads the matching thread metadata and rollout files from your real `~/.codex`
+03. It writes a compressed backup archive
+04. On another machine, you choose that archive and remap each project to a local workspace before import
 
 ## Storage Model
 
@@ -141,9 +145,9 @@ Before releasing:
 
 Recommended release flow:
 
-1. Archive, sign, notarize, and export `QuotaBar.app` manually from Xcode
-2. Put the exported app at `dist/QuotaBar.app`
-3. Run:
+01. Archive, sign, notarize, and export `QuotaBar.app` manually from Xcode
+02. Put the exported app at `dist/QuotaBar.app`
+03. Run:
 
 ```bash
 scripts/build-dmg.sh
@@ -170,15 +174,15 @@ This solves:
 
 In-app workflow:
 
-1. Open `Settings -> Backup`
-2. Set an `Export Folder`
-3. Choose `Select Threads To Export`
-4. Pick one or more threads grouped by workspace
-5. Export them into one compressed `.zip` archive
-6. Move that archive to the target machine
-7. On the target machine, open `Settings -> Backup`
-8. Choose the backup `.zip`
-9. For each detected project, select the destination local workspace
+01. Open `Settings -> Backup`
+02. Set an `Export Folder`
+03. Choose `Select Threads To Export`
+04. Pick one or more threads grouped by workspace
+05. Export them into one compressed `.zip` archive
+06. Move that archive to the target machine
+07. On the target machine, open `Settings -> Backup`
+08. Choose the backup `.zip`
+09. For each detected project, select the destination local workspace
 10. Import the backup
 
 Important behavior:
@@ -218,7 +222,7 @@ Import a bundle on another machine:
 ./scripts/codex_session_import.py "/path/to/bundle"
 ```
 
-If the repo lives at a different path on the target machine, pass `--cwd`:
+If the repo lives at a different path on the target machine, pass `--cwd` :
 
 ```bash
 ./scripts/codex_session_import.py "/path/to/bundle" --cwd /path/to/QuotaBar
