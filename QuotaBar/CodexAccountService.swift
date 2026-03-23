@@ -162,6 +162,9 @@ final class CodexAccountService {
         try modelContext.save()
 
         do {
+            if let identity = try? CodexAuthParser.identity(from: authData) {
+                account.subscriptionExpiresAt = identity.subscriptionExpiresAt
+            }
             let token = try CodexAuthParser.bearerToken(from: authData)
             let usageResponse = try await withTimeout(Self.refreshTimeout) {
                 try await self.fetchUsage(token: token)
@@ -288,6 +291,7 @@ final class CodexAccountService {
 
         record.email = identity.email
         record.planType = identity.planType
+        record.subscriptionExpiresAt = identity.subscriptionExpiresAt
         if record.displayName.isEmpty {
             record.displayName = defaultDisplayName(for: identity.email)
         }
