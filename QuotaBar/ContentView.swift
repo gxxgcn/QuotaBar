@@ -46,6 +46,7 @@ struct ContentView<DataSource: ContentViewDataSource>: View {
                                     snapshot: dataSource.snapshotsByAccountID[account.id],
                                     isLocalAccount: dataSource.isLocalCodexAccount(account),
                                     isSwitchingToLocal: dataSource.isSwitchingLocalCodexAccount(account),
+                                    selectedStyle: .pro,
                                     onShowError: { account, errorText in
                                         presentedCardError = CardErrorPresentation(
                                             accountID: account.id,
@@ -389,10 +390,27 @@ private struct CardErrorSheet: View {
 }
 
 private struct AccountCardView: View {
+    enum SelectedStyle: String, CaseIterable, Identifiable {
+        case pro
+        case iridescent
+        
+        var id: String { rawValue }
+        
+        var displayName: String {
+            switch self {
+            case .pro:
+                return "Pro"
+            case .iridescent:
+                return "Iridescent"
+            }
+        }
+    }
+    
     let account: ProviderAccountRecord
     let snapshot: CodexUsageSnapshot?
     let isLocalAccount: Bool
     let isSwitchingToLocal: Bool
+    let selectedStyle: SelectedStyle
     let onShowError: (ProviderAccountRecord, String) -> Void
     let onSwitchToLocal: () -> Void
     
@@ -579,15 +597,32 @@ private struct AccountCardView: View {
     
     private var cardBackground: LinearGradient {
         if isLocalAccount {
-            return LinearGradient(
-                colors: [
-                    Color(red: 0.24, green: 0.30, blue: 0.38).opacity(0.7),
-                    Color(red: 0.18, green: 0.22, blue: 0.29).opacity(0.78),
-                    Color(red: 0.28, green: 0.36, blue: 0.46).opacity(0.64),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            switch selectedStyle {
+            case .pro:
+                return LinearGradient(
+                    colors: [
+                        Color(red: 0.12, green: 0.14, blue: 0.19).opacity(0.98),
+                        Color(red: 0.16, green: 0.20, blue: 0.28).opacity(0.96),
+                        Color(red: 0.10, green: 0.24, blue: 0.36).opacity(0.92),
+                        Color(red: 0.08, green: 0.11, blue: 0.17).opacity(0.98),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: UnitPoint(x: 0.92, y: 1.0)
+                )
+            case .iridescent:
+                return LinearGradient(
+                    colors: [
+                        Color(red: 0.09, green: 0.10, blue: 0.16).opacity(0.98),
+                        Color(red: 0.35, green: 0.14, blue: 0.24).opacity(0.94),
+                        Color(red: 0.52, green: 0.30, blue: 0.12).opacity(0.82),
+                        Color(red: 0.11, green: 0.40, blue: 0.28).opacity(0.80),
+                        Color(red: 0.10, green: 0.26, blue: 0.52).opacity(0.90),
+                        Color(red: 0.24, green: 0.14, blue: 0.44).opacity(0.96),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: UnitPoint(x: 0.92, y: 1.0)
+                )
+            }
         }
         
         return LinearGradient(
@@ -602,14 +637,29 @@ private struct AccountCardView: View {
     
     private var borderStyle: some ShapeStyle {
         if isLocalAccount {
-            return LinearGradient(
-                colors: [
-                    Color.white.opacity(0.16),
-                    Color(red: 0.54, green: 0.66, blue: 0.78).opacity(0.18),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            switch selectedStyle {
+            case .pro:
+                return LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.18),
+                        Color(red: 0.42, green: 0.74, blue: 1.0).opacity(0.22),
+                        Color(red: 0.62, green: 0.82, blue: 1.0).opacity(0.12),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            case .iridescent:
+                return LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.18),
+                        Color(red: 0.96, green: 0.46, blue: 0.54).opacity(0.22),
+                        Color(red: 0.34, green: 0.60, blue: 0.98).opacity(0.18),
+                        Color.white.opacity(0.10),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
         }
         
         return LinearGradient(
@@ -624,7 +674,12 @@ private struct AccountCardView: View {
     
     private var glowColor: Color {
         if isLocalAccount {
-            return Color(red: 0.56, green: 0.68, blue: 0.8)
+            switch selectedStyle {
+            case .pro:
+                return Color(red: 0.42, green: 0.74, blue: 1.0)
+            case .iridescent:
+                return Color(red: 0.74, green: 0.50, blue: 0.96)
+            }
         }
         return Color.white.opacity(0.92)
     }
@@ -713,6 +768,49 @@ struct ContentView_Previews: PreviewProvider {
                 quickLoginInProgressOverride: true
             )
             .previewDisplayName("Login In Progress")
+            
+            SelectedAccountCardStylePreview()
+                .previewDisplayName("Selected Card Styles")
         }
+    }
+}
+
+private struct SelectedAccountCardStylePreview: View {
+    private let account = PreviewFactory.makeSampleAccounts().first!
+    private let snapshot: CodexUsageSnapshot?
+    
+    init() {
+        snapshot = PreviewFactory.makeSnapshot(for: account)
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Selected Account Card Styles")
+                .font(.headline)
+            
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(AccountCardView.SelectedStyle.allCases) { style in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(style.displayName)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        
+                        AccountCardView(
+                            account: account,
+                            snapshot: snapshot,
+                            isLocalAccount: true,
+                            isSwitchingToLocal: false,
+                            selectedStyle: style,
+                            onShowError: { _, _ in },
+                            onSwitchToLocal: {}
+                        )
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 320)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
