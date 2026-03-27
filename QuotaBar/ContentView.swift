@@ -507,7 +507,7 @@ private struct AccountCardView: View {
                 if let expiresAt = account.subscriptionExpiresAt {
                     Text("Expires \(expiresAt.formatted(.dateTime.month(.abbreviated).day().year()))")
                         .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(subscriptionExpiryColor(expiresAt))
                 }
                 if isSwitchingToLocal {
                     ProgressView()
@@ -821,7 +821,18 @@ private struct AccountCardView: View {
             return .secondary
         }
     }
-    
+
+    private func subscriptionExpiryColor(_ expiresAt: Date) -> Color {
+        let remainingSeconds = expiresAt.timeIntervalSinceNow
+        if remainingSeconds < 2 * 24 * 60 * 60 {
+            return .red
+        }
+        if remainingSeconds < 4 * 24 * 60 * 60 {
+            return .yellow
+        }
+        return .secondary
+    }
+
     private func remainingString(_ window: RateLimitWindowSnapshot?) -> String {
         guard let window else { return "N/A" }
         return "\(window.percentLeft)% left"
