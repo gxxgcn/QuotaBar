@@ -17,6 +17,8 @@ struct LocalCodexSwitchResult: Sendable {
 final class CodexAccountService {
     private static let refreshTimeout: Duration = .seconds(15)
     private static let usageEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+    private static let authRefreshEndpoint = URL(string: "https://auth.openai.com/oauth/token")!
+    private static let authClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
     struct LoginStartContext {
         let authURL: URL?
@@ -158,16 +160,22 @@ final class CodexAccountService {
 
     func refreshAccount(_ account: ProviderAccountRecord) async throws -> CodexUsageSnapshot {
         let authData = try await credentialStore.loadAuthData(for: account.id)
+        let remoteAccountID = account.remoteAccountID
         account.syncStatus = .refreshing
         try modelContext.save()
 
         do {
-            if let identity = try? CodexAuthParser.identity(from: authData) {
-                account.subscriptionExpiresAt = identity.subscriptionExpiresAt
+            let (usageResponse, latestAuthData) = try await withTimeout(Self.refreshTimeout) {
+                try await self.fetchUsageRefreshingAuthIfNeeded(
+                    authData: authData,
+                    remoteAccountID: remoteAccountID
+                )
             }
-            let token = try CodexAuthParser.bearerToken(from: authData)
-            let usageResponse = try await withTimeout(Self.refreshTimeout) {
-                try await self.fetchUsage(token: token)
+            if latestAuthData != authData {
+                try await credentialStore.save(authData: latestAuthData, for: account.id)
+            }
+            if let identity = try? CodexAuthParser.identity(from: latestAuthData) {
+                account.subscriptionExpiresAt = identity.subscriptionExpiresAt
             }
 
             if let planType = usageResponse.planType, !planType.isEmpty {
@@ -351,6 +359,28 @@ final class CodexAccountService {
         return .failed
     }
 
+    private func fetchUsageRefreshingAuthIfNeeded(
+        authData: Data,
+        remoteAccountID: String
+    ) async throws -> (UsageResponse, Data) {
+        let token = try CodexAuthParser.bearerToken(from: authData)
+
+        do {
+            let response = try await fetchUsage(token: token)
+            return (response, authData)
+        } catch {
+            guard shouldRefreshAuth(after: error) else {
+                throw error
+            }
+
+            let refreshedAuthData = try await refreshAuthData(authData)
+            let refreshedToken = try CodexAuthParser.bearerToken(from: refreshedAuthData)
+            let response = try await fetchUsage(token: refreshedToken)
+            try syncLocalAuthIfNeeded(refreshedAuthData, remoteAccountID: remoteAccountID)
+            return (response, refreshedAuthData)
+        }
+    }
+
     private func fetchUsage(token: String) async throws -> UsageResponse {
         var request = URLRequest(url: Self.usageEndpoint)
         request.httpMethod = "GET"
@@ -373,6 +403,82 @@ final class CodexAccountService {
         }
 
         return try UsageResponse(data: data)
+    }
+
+    private func refreshAuthData(_ authData: Data) async throws -> Data {
+        let refreshToken = try CodexAuthParser.refreshToken(from: authData)
+
+        var request = URLRequest(url: Self.authRefreshEndpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = formEncodedData([
+            URLQueryItem(name: "grant_type", value: "refresh_token"),
+            URLQueryItem(name: "refresh_token", value: refreshToken),
+            URLQueryItem(name: "client_id", value: Self.authClientID),
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexAppServerError.requestFailed(message: "Auth refresh returned an invalid response.")
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let detail = responseBodyDetail(from: data)
+            throw CodexAppServerError.requestFailed(
+                message: "Auth refresh failed: HTTP \(httpResponse.statusCode)\(detail)"
+            )
+        }
+
+        let refreshResponse: CodexTokenRefreshResponse
+        do {
+            refreshResponse = try JSONDecoder().decode(CodexTokenRefreshResponse.self, from: data)
+        } catch {
+            throw CodexAppServerError.requestFailed(
+                message: "Auth refresh succeeded but returned an unreadable token payload."
+            )
+        }
+
+        let payload = try CodexAuthParser.payload(from: authData)
+        let updatedPayload = payload.updatingTokens(with: refreshResponse)
+        return try CodexAuthParser.serializedAuthData(from: updatedPayload)
+    }
+
+    private func shouldRefreshAuth(after error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("http 401")
+            || message.contains("http 403")
+            || message.contains("unauthorized")
+    }
+
+    private func syncLocalAuthIfNeeded(_ authData: Data, remoteAccountID: String) throws {
+        let localAuthURL = localAuthFileURL()
+        guard fileManager.fileExists(atPath: localAuthURL.path) else {
+            return
+        }
+
+        guard let localAuthData = try? Data(contentsOf: localAuthURL),
+              let localIdentity = try? localIdentity(from: localAuthData),
+              localIdentity.accountID == remoteAccountID else {
+            return
+        }
+
+        try atomicallyWriteLocalAuth(authData, to: localAuthURL)
+    }
+
+    private func formEncodedData(_ items: [URLQueryItem]) -> Data? {
+        var components = URLComponents()
+        components.queryItems = items
+        return components.percentEncodedQuery?.data(using: .utf8)
+    }
+
+    private func responseBodyDetail(from data: Data) -> String {
+        guard let body = String(data: data.prefix(300), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !body.isEmpty else {
+            return ""
+        }
+        return " - \(body)"
     }
 
     private func loadAuthData(from homeURL: URL) throws -> Data {

@@ -26,6 +26,17 @@ struct CodexAuthPayload: Codable, Sendable {
         case tokens
         case lastRefresh = "last_refresh"
     }
+
+    func updatingTokens(with response: CodexTokenRefreshResponse, refreshedAt: Date = .now) -> CodexAuthPayload {
+        var updated = self
+        var tokens = updated.tokens ?? Tokens()
+        tokens.accessToken = response.accessToken
+        tokens.idToken = response.idToken ?? tokens.idToken
+        tokens.refreshToken = response.refreshToken ?? tokens.refreshToken
+        updated.tokens = tokens
+        updated.lastRefresh = refreshedAt.codexISO8601String
+        return updated
+    }
 }
 
 struct CodexAccountIdentity: Sendable {
@@ -35,10 +46,36 @@ struct CodexAccountIdentity: Sendable {
     let subscriptionExpiresAt: Date?
 }
 
+struct CodexTokenRefreshResponse: Codable, Sendable {
+    let accessToken: String
+    let idToken: String?
+    let refreshToken: String?
+    let tokenType: String?
+    let expiresIn: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case idToken = "id_token"
+        case refreshToken = "refresh_token"
+        case tokenType = "token_type"
+        case expiresIn = "expires_in"
+    }
+}
+
 enum CodexAuthParser {
-    static func identity(from authData: Data) throws -> CodexAccountIdentity {
+    static func payload(from authData: Data) throws -> CodexAuthPayload {
         let decoder = JSONDecoder()
-        let payload = try decoder.decode(CodexAuthPayload.self, from: authData)
+        return try decoder.decode(CodexAuthPayload.self, from: authData)
+    }
+
+    static func serializedAuthData(from payload: CodexAuthPayload) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(payload)
+    }
+
+    static func identity(from authData: Data) throws -> CodexAccountIdentity {
+        let payload = try payload(from: authData)
 
         if let idToken = payload.tokens?.idToken,
            let identity = identity(fromJWT: idToken, fallbackAccountID: payload.tokens?.accountID) {
@@ -71,6 +108,17 @@ enum CodexAuthParser {
 
         throw CodexAppServerError.requestFailed(
             message: "Could not find a usable bearer token in auth.json."
+        )
+    }
+
+    static func refreshToken(from authData: Data) throws -> String {
+        let payload = try payload(from: authData)
+        if let refreshToken = normalizedToken(from: payload.tokens?.refreshToken) {
+            return refreshToken
+        }
+
+        throw CodexAppServerError.requestFailed(
+            message: "Could not find a usable refresh token in auth.json."
         )
     }
 
@@ -171,6 +219,14 @@ enum CodexAuthParser {
         }
         guard token.count >= 20, !token.contains(" ") else { return nil }
         return token
+    }
+}
+
+private extension Date {
+    var codexISO8601String: String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: self)
     }
 }
 
